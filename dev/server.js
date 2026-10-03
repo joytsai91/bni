@@ -153,4 +153,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { start, simulateLineText };
+module.exports = { start, simulateLineText, renderTemplate };

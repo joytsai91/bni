@@ -541,8 +541,9 @@ Webhook 處理的事件：
 
 | 指令 | 內容 |
 | --- | --- |
-| `npm test` | `test/lib.test.js`（純邏輯）與 `test/server.test.js`（用 `dev/gas-fake.js` 跑完整後端：帳號、權限、活動、報名、簽到、列印、PALMS、追蹤、產業分析、財務、月費、寄信、LINE 綁定與推播、排程） |
+| `npm test` | `test/lib.test.js`（純邏輯）、`test/server.test.js`（用 `dev/gas-fake.js` 跑完整後端：帳號、權限、活動、報名、簽到、列印、PALMS、追蹤、產業分析、財務、月費、寄信、LINE 綁定與推播、排程）、`test/bundle.test.js`（打包版可以獨立執行） |
 | `npm run e2e` | `dev/e2e.js` 用 Chromium 操作本機預覽：19 個流程，輸出截圖與列印 PDF 到 `.e2e-output/` |
 | `npm run dev` | 本機預覽（假試算表、假寄信、假 LINE API） |
+| `npm run bundle` | `dev/bundle.js` 產生複製貼上部署用的 4 個檔案到 `dist/`：`src/*.js` 依檔名合併成一份 Code.gs，App、Register 的 include 全部內嵌（內嵌後不能留下 `<?` 模板標籤） |
 
 `dev/gas-fake.js` 模擬的行為：試算表自動轉型（電話掉 0、日期字串變日期、公式字串直接報錯）、指令碼屬性、快取、鎖、`MailApp`（含每日額度）、`UrlFetchApp`（可設定回應）、時間觸發器、`ContentService`。

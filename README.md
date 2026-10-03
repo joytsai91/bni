@@ -29,12 +29,17 @@
 1. 建立一份 Google 試算表，例如「BNI 台中市中心區湧泉分會 管理」。
 2. 試算表選單「擴充功能 → Apps Script」。
 3. 把程式放進去，二選一：
-   - **clasp（建議）**：`npm i -g @google/clasp` → `clasp login` → 把 `.clasp.json.example` 複製成 `.clasp.json`，填入 Apps Script「專案設定」裡的指令碼 ID → `clasp push`。
-   - **手動**：`src/` 裡每個 `.js` 在編輯器建立同名的指令碼檔，每個 `.html` 建立同名的 HTML 檔，內容整份貼上。到「專案設定」勾選「在編輯器中顯示 appsscript.json」，再貼上 `src/appsscript.json`。
+   - **複製貼上（不用安裝任何工具）**：用打包好的 4 個檔案（`npm run bundle` 產生在 `dist/`，或向開發者索取），用記事本等文字編輯器打開、全選複製：
+     1. `1-Code.gs.txt` → 編輯器裡原本的 `Code.gs`，內容全部刪掉再貼上。
+     2. `2-appsscript.json.txt` → 先到「專案設定」勾選「在編輯器中顯示 appsscript.json 資訊清單檔案」，再把 `appsscript.json` 的內容換成這份。
+     3. `3-App.html.txt` → 檔案旁的「＋ → HTML」，命名 `App`（不用打 .html），貼上。
+     4. `4-Register.html.txt` → 同上，命名 `Register`，貼上。
+     5. 按儲存。
+   - **clasp（工程師、之後常更新時建議）**：`npm i -g @google/clasp` → `clasp login` → 把 `.clasp.json.example` 複製成 `.clasp.json`，填入 Apps Script「專案設定」裡的指令碼 ID → `clasp push`。
 4. 回到試算表重新整理，選單會出現「BNI 分會工具」：
-   - 「初始化資料表」：第一次會要求授權。
+   - 「初始化資料表」：第一次會要求授權。Google 會顯示「這個應用程式未經 Google 驗證」，因為這是你自己的程式，按「進階 → 前往」繼續。
    - 「建立管理員帳號」：輸入登入帳號、顯示名稱、密碼（至少 8 碼）。第一個帳號只能從這裡建立。
-5. Apps Script 編輯器「部署 → 新增部署 → 類型：網頁應用程式」：執行身分選「我」，存取權選「所有人」。
+5. Apps Script 編輯器「部署 → 新增部署 → 類型：網頁應用程式」：執行身分選「我」，存取權選「所有人」。用 Google Workspace（公司網域）帳號時，要選「所有人」而不是只限網域內，否則來賓打不開報名頁。
 6. 試算表選單「顯示系統網址」取得管理系統與報名頁網址，用管理員帳號登入。
 7. 到「系統設定」填分會名稱、例會星期與時間，並為其他幹部建立帳號、指定角色。
 
@@ -115,6 +120,7 @@ npm install
 npm test        # 核心邏輯與後端流程測試（用 dev/gas-fake.js 模擬 Google 試算表）
 npm run dev     # 本機預覽 http://127.0.0.1:8080/exec（含示範資料，帳號密碼會印在終端機）
 npm run e2e     # 用 Chromium 實際操作畫面，輸出截圖與列印 PDF 到 .e2e-output/
+npm run bundle  # 產生複製貼上部署用的 4 個檔案到 dist/（改過程式要重新產生）
 ```
 
 - `dev/gas-fake.js` 會模擬試算表的自動轉型：沒處理好的電話會掉開頭 0、日期字串會變日期、公式字串會直接報錯。寫入相關的程式改壞了，測試抓得到。

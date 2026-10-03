@@ -7,6 +7,7 @@
     "test": "node --test \"test/*.test.js\"",
     "dev": "node dev/server.js",
     "e2e": "node dev/e2e.js",
+    "bundle": "node dev/bundle.js",
     "push": "clasp push"
   },
   "devDependencies": {
