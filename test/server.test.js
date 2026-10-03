@@ -52,7 +52,7 @@ for (const order of ['normal', 'reverse']) {
     const s = setup(order);
     const res = s.api('public.bootstrap');
     assert.equal(res.ok, true, res.error);
-    assert.equal(res.data.chapterName, 'BNI ○○分會');
+    assert.equal(res.data.chapterName, 'BNI 台中市中心區湧泉分會');
     assert.deepEqual(res.data.events.slice(0, 2).map((e) => e.id), ['MTG-2026-10-08', 'MTG-2026-10-15']);
   });
 }
@@ -682,9 +682,9 @@ test('LINE：產生文字、Token 驗證只寫不讀、Webhook 綁定群組與�
   assert.deepEqual(page.templates.map((t) => t.name), ['例會提醒', '報名邀請', '歡迎來賓']);
   s.api('public.register', { eventId: MTG, name: '來賓甲', category: '設計' });
   const text = s.admin('line.compose', { templateId: page.templates[0].id, eventId: MTG }).text;
-  assert.equal(text, '【BNI ○○分會】例會提醒\n📅 2026-10-08（四） 07:00–09:00\n📍 \n目前已有 1 位來賓報名，大家加油！');
+  assert.equal(text, '【BNI 台中市中心區湧泉分會】例會提醒\n📅 2026-10-08（四） 07:00–09:00\n📍 \n目前已有 1 位來賓報名，大家加油！');
   s.admin('checkin.member', { eventId: MTG, memberId: 'M001', status: 'P' });
-  assert.match(s.admin('line.compose', { kind: 'attendance', eventId: MTG }).text, /^【BNI ○○分會】2026-10-08（四） 出席結果\n會員 3 位：出席 1、遲到 0、代理 0、病假 0、缺席 0、未簽到 2/);
+  assert.match(s.admin('line.compose', { kind: 'attendance', eventId: MTG }).text, /^【BNI 台中市中心區湧泉分會】2026-10-08（四） 出席結果\n會員 3 位：出席 1、遲到 0、代理 0、病假 0、缺席 0、未簽到 2/);
   assert.equal(s.admin('checkin.attendanceText', { eventId: MTG }), s.admin('line.compose', { kind: 'attendance', eventId: MTG }).text);
   assert.match(s.api('line.compose', { kind: 'palms', from: '2026-09-24', to: '2026-09-30' }, s.token).error, /沒有 PALMS 資料/);
   assert.match(s.api('line.send', { groupIds: ['x'], text: 'hi' }, s.token).error, /請選擇要推播的群組/);

@@ -114,7 +114,12 @@
         var b = res[0];
         var params = (res[1] && res[1].parameter) || {};
         events = b.events;
-        $('#reg-title').textContent = b.chapterName + '｜活動報名';
+        // 分會名稱較長時在「｜」後換行，不要把「活動報名」拆成兩行
+        var tail = document.createElement('span');
+        tail.style.whiteSpace = 'nowrap';
+        tail.textContent = '活動報名';
+        $('#reg-title').textContent = b.chapterName + '｜';
+        $('#reg-title').appendChild(tail);
         if (!events.length) {
           $('#reg-loading').textContent = '目前沒有開放報名的活動，謝謝您的關心！';
           return;

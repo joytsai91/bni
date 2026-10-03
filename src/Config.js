@@ -6,7 +6,7 @@
 
 const SETTING_ITEMS = [
   { key: 'systemName', title: '系統名稱', value: '分會管理系統', note: '顯示在選單最上方' },
-  { key: 'chapterName', title: '分會名稱', value: 'BNI ○○分會', note: '顯示在畫面、簽到表、名牌與桌牌上' },
+  { key: 'chapterName', title: '分會名稱', value: 'BNI 台中市中心區湧泉分會', note: '顯示在畫面、簽到表、名牌與桌牌上' },
   { key: 'meetingWeekday', title: '例會星期', value: '四', note: '填 一～日，系統每週自動排出例會' },
   { key: 'meetingTime', title: '例會時間', value: '07:00', note: '例會開始時間' },
   { key: 'meetingEndTime', title: '例會結束時間', value: '09:00', note: '' },

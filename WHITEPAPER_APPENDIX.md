@@ -318,7 +318,7 @@ LINE 平台 ── POST /exec ──→ Line.js doPost（綁定群組）
 | 項目 | key | 預設值 | 說明 |
 | --- | --- | --- | --- |
 | 系統名稱 | `systemName` | 分會管理系統 | 顯示在選單最上方 |
-| 分會名稱 | `chapterName` | BNI ○○分會 | 顯示在畫面、簽到表、名牌與桌牌上 |
+| 分會名稱 | `chapterName` | BNI 台中市中心區湧泉分會 | 顯示在畫面、簽到表、名牌與桌牌上 |
 | 例會星期 | `meetingWeekday` | 四 | 填 一～日，系統每週自動排出例會 |
 | 例會時間 | `meetingTime` | 07:00 | 例會開始時間 |
 | 例會結束時間 | `meetingEndTime` | 09:00 |  |

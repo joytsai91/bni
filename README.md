@@ -26,7 +26,7 @@
 
 ## 部署（約 10 分鐘）
 
-1. 建立一份 Google 試算表，例如「BNI ○○分會 管理」。
+1. 建立一份 Google 試算表，例如「BNI 台中市中心區湧泉分會 管理」。
 2. 試算表選單「擴充功能 → Apps Script」。
 3. 把程式放進去，二選一：
    - **clasp（建議）**：`npm i -g @google/clasp` → `clasp login` → 把 `.clasp.json.example` 複製成 `.clasp.json`，填入 Apps Script「專案設定」裡的指令碼 ID → `clasp push`。
