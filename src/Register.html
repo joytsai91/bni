@@ -12,21 +12,32 @@
 <body>
   <div class="register-wrap">
     <header class="register-head">
-      <span class="brand-mark">BNI</span>
-      <h1 id="reg-title">來賓報名</h1>
-      <p class="muted">歡迎蒞臨例會！留下資料，我們會為您準備名牌與座位。</p>
+      <div class="drawer-logo">BNI</div>
+      <h1 id="reg-title">活動報名</h1>
+      <p class="muted">歡迎參加！留下資料，我們會為您準備名牌與座位。</p>
     </header>
 
     <p class="muted" id="reg-loading" style="text-align:center">載入中…</p>
 
     <form class="card register-form" id="reg-form" novalidate hidden>
-      <label class="field"><span>參加日期 <b class="req">*</b></span><select name="date" id="reg-date"></select></label>
-      <label class="field"><span>姓名 <b class="req">*</b></span><input type="text" name="name" maxlength="40" autocomplete="name"></label>
-      <label class="field"><span>公司名稱</span><input type="text" name="company" maxlength="80" autocomplete="organization"></label>
-      <label class="field"><span>行業／專業別 <b class="req">*</b></span><input type="text" name="category" maxlength="60" placeholder="例如：室內設計、保險規劃"></label>
-      <label class="field"><span>手機</span><input type="tel" name="phone" maxlength="30" autocomplete="tel"></label>
-      <label class="field"><span>Email</span><input type="email" name="email" maxlength="100" autocomplete="email"></label>
-      <label class="field"><span>邀請人</span><select name="inviter" id="reg-inviter"></select></label>
+      <label class="field"><span>參加場次 <b class="req">*</b></span><select name="eventId" id="reg-event"></select></label>
+      <div class="event-info" id="reg-info"></div>
+      <div class="field" id="reg-role-box" hidden>
+        <span>身分</span>
+        <div class="segmented">
+          <label><input type="radio" name="role" value="來賓" checked> 來賓</label>
+          <label><input type="radio" name="role" value="會員"> 分會會員</label>
+        </div>
+      </div>
+      <label class="field" id="reg-member-box" hidden><span>會員姓名 <b class="req">*</b></span><select name="memberId" id="reg-member"></select></label>
+      <div class="register-form" id="reg-guest-box">
+        <label class="field"><span>姓名 <b class="req">*</b></span><input type="text" name="name" maxlength="40" autocomplete="name"></label>
+        <label class="field"><span>公司名稱</span><input type="text" name="company" maxlength="80" autocomplete="organization"></label>
+        <label class="field"><span>行業／專業別 <b class="req">*</b></span><input type="text" name="category" maxlength="60" placeholder="例如：室內設計、保險規劃"></label>
+        <label class="field"><span>手機</span><input type="tel" name="phone" maxlength="30" autocomplete="tel"></label>
+        <label class="field"><span>Email</span><input type="email" name="email" maxlength="100" autocomplete="email"></label>
+        <label class="field"><span>邀請人</span><select name="inviter" id="reg-inviter"></select></label>
+      </div>
       <label class="field"><span>備註</span><textarea name="note" rows="2" maxlength="200"></textarea></label>
       <input type="text" name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
       <p class="form-error" id="reg-error" hidden></p>
@@ -49,7 +60,7 @@
       var $ = App.$;
       var esc = App.esc;
       var form = $('#reg-form');
-      var meetings = [];
+      var events = [];
 
       function pageLocation() {
         return new Promise(function (resolve) {
@@ -74,43 +85,82 @@
         $('#reg-error').hidden = !msg;
       }
 
+      function currentEvent() {
+        return events.filter(function (e) { return e.id === $('#reg-event').value; })[0];
+      }
+
+      function isMemberRole() {
+        var r = form.querySelector('input[name=role]:checked');
+        return !$('#reg-role-box').hidden && r && r.value === '會員';
+      }
+
+      function updateEvent() {
+        var e = currentEvent();
+        if (!e) return;
+        var info = [e.timeLabel, e.place].filter(Boolean).join('・');
+        $('#reg-info').innerHTML = '<b>' + esc(e.dateLabel + ' ' + e.name) + '</b>' + (info ? '<br>' + esc(info) : '') +
+          (e.fee ? '<br>費用：NT$' + esc(App.fmt(e.fee)) : '') + (e.description ? '<br><span class="muted">' + esc(e.description) + '</span>' : '');
+        $('#reg-role-box').hidden = e.isMeeting;
+        updateRole();
+      }
+
+      function updateRole() {
+        var member = isMemberRole();
+        $('#reg-member-box').hidden = !member;
+        $('#reg-guest-box').hidden = member;
+      }
+
       Promise.all([App.api('public.bootstrap'), pageLocation()]).then(function (res) {
         var b = res[0];
         var params = (res[1] && res[1].parameter) || {};
-        meetings = b.meetings;
-        $('#reg-title').textContent = b.chapterName + '｜來賓報名';
-        $('#reg-date').innerHTML = b.meetings.map(function (m) {
-          return '<option value="' + esc(m.date) + '">' + esc(m.label + (b.meetingTime ? ' ' + b.meetingTime : '')) + '</option>';
+        events = b.events;
+        $('#reg-title').textContent = b.chapterName + '｜活動報名';
+        if (!events.length) {
+          $('#reg-loading').textContent = '目前沒有開放報名的活動，謝謝您的關心！';
+          return;
+        }
+        $('#reg-event').innerHTML = events.map(function (e) {
+          return '<option value="' + esc(e.id) + '">' + esc(e.dateLabel + ' ' + e.name) + '</option>';
         }).join('');
-        if (params.date && b.meetings.some(function (m) { return m.date === params.date; })) $('#reg-date').value = params.date;
+        if (params.event && events.some(function (e) { return e.id === params.event; })) $('#reg-event').value = params.event;
         $('#reg-inviter').innerHTML = '<option value="">（不確定／無）</option>' + b.members.map(function (m) {
           return '<option value="' + esc(m.name) + '">' + esc(m.name + (m.category ? '（' + m.category + '）' : '')) + '</option>';
         }).join('');
         selectValue($('#reg-inviter'), String(params.inviter || '').trim().slice(0, 40));
+        $('#reg-member').innerHTML = '<option value="">請選擇</option>' + b.members.map(function (m) {
+          return '<option value="' + esc(m.id) + '">' + esc(m.name) + '</option>';
+        }).join('');
+        updateEvent();
         $('#reg-loading').hidden = true;
         form.hidden = false;
       }).catch(function (err) {
         $('#reg-loading').textContent = '暫時無法報名：' + err.message;
       });
 
+      $('#reg-event').addEventListener('change', updateEvent);
+      App.$$('input[name=role]', form).forEach(function (r) { r.addEventListener('change', updateRole); });
+
       form.addEventListener('submit', function (e) {
         e.preventDefault();
-        var data = {};
-        Array.prototype.forEach.call(form.querySelectorAll('[name]'), function (el) { data[el.name] = el.value.trim(); });
-        if (!data.name) { showError('請填寫姓名'); return; }
-        if (!data.category) { showError('請填寫行業／專業別'); return; }
+        var data = App.formValues(form);
+        if (isMemberRole()) {
+          if (!data.memberId) { showError('請選擇會員姓名'); return; }
+        } else {
+          data.role = '來賓';
+          if (!data.name) { showError('請填寫姓名'); return; }
+          if (!data.category) { showError('請填寫行業／專業別'); return; }
+        }
         showError('');
-        $('#reg-submit').disabled = true;
-        App.api('guest.register', data).then(function (res) {
-          var m = meetings.filter(function (x) { return x.date === res.guest.date; })[0];
-          $('#done-title').textContent = res.duplicate ? '您已經報名過囉' : '報名完成，期待見到您！';
-          $('#done-text').textContent = res.guest.name + '，' + (m ? m.label : res.guest.date) + ' 見。';
-          form.hidden = true;
-          $('#reg-done').hidden = false;
-        }).catch(function (err) {
-          showError(err.message);
-        }).then(function () {
-          $('#reg-submit').disabled = false;
+        App.withButton($('#reg-submit'), function () {
+          return App.api('public.register', data).then(function (res) {
+            var ev = currentEvent();
+            $('#done-title').textContent = res.duplicate ? '您已經報名過囉' : '報名完成，期待見到您！';
+            $('#done-text').textContent = res.registration.name + '，' + (ev ? ev.dateLabel + ' ' + ev.name : res.registration.eventDate) + ' 見。';
+            form.hidden = true;
+            $('#reg-done').hidden = false;
+          }).catch(function (err) {
+            showError(err.message);
+          });
         });
       });
 

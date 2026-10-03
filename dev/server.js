@@ -4,7 +4,7 @@
  * 本機預覽：用假的 Apps Script 環境（記憶體裡的試算表）執行 src/，並模擬 google.script.run，
  * 不用部署就能在瀏覽器操作完整畫面。資料只存在記憶體，關掉就清空。
  *
- *   npm run dev                     → http://127.0.0.1:8080（管理密碼 1234，含示範資料）
+ *   npm run dev                     → http://127.0.0.1:8080（含示範資料，帳號密碼會印在終端機）
  *   http://127.0.0.1:8080/exec?page=register → 來賓報名頁
  *   DEV_NOW=2026-10-08T07:05:00+08:00 npm run dev → 固定「現在時間」測試遲到判定
  */
@@ -116,7 +116,7 @@ function start({ port = 8080, now = process.env.DEV_NOW, withSeed = true } = {})
 if (require.main === module) {
   const portArg = process.argv.indexOf('--port');
   start({ port: portArg > 0 ? Number(process.argv[portArg + 1]) : 8080 }).then(({ url, seeded }) => {
-    console.log(`管理系統：${url}/exec（管理密碼 ${seeded.pin}）`);
+    console.log(`管理系統：${url}/exec（管理員 ${seeded.admin.username} / ${seeded.admin.password}；來賓接待 ${seeded.staff.username} / ${seeded.staff.password}）`);
     console.log(`來賓報名：${url}/exec?page=register`);
   });
 }

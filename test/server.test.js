@@ -1,34 +1,40 @@
 'use strict';
 /**
- * 以假的 Apps Script 環境跑完整後端流程：報名 → 簽到 → 列印資料 → PALMS 匯入與統計。
+ * 以假的 Apps Script 環境跑完整後端流程：帳號權限、活動、報名、簽到、列印、PALMS、首頁。
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createServer } = require('../dev/gas-fake');
 
-const PIN = '2468';
+const ADMIN = { username: 'joy', displayName: 'Joy', roles: '系統管理員', password: 'joy-pass-123' };
+const MTG = 'MTG-2026-10-08'; // 2026-10-08 是週四（預設例會日）
 
 function setup(order) {
   const s = createServer({ order });
-  s.setNow('2026-10-08T06:50:00+08:00'); // 週四 例會當天
-  s.scriptProps.setProperty('ADMIN_PIN', PIN);
-  s.admin = (action, data) => {
-    const res = s.api(action, data, PIN);
+  s.setNow('2026-10-08T06:50:00+08:00');
+  s.createAccount(ADMIN);
+  s.token = s.login(ADMIN.username, ADMIN.password);
+  s.as = (token) => (action, data) => {
+    const res = s.api(action, data, token);
     if (!res.ok) throw new Error(res.error);
     return res.data;
   };
+  s.admin = s.as(s.token);
   return s;
 }
 
 function addMembersByHand(s) {
-  s.admin('auth.check'); // 讓工作表建立
-  s.api('public.bootstrap');
+  s.admin('members.list'); // 讓工作表建立
   const sheet = s.ss.getSheetByName('會員名單');
   // 模擬秘書直接在試算表打字：沒有會員ID、手機開頭 0 被吃掉
-  sheet.typeRow(['', '王小明', '小明設計', '室內設計', '0912345678', 'ming@example.com', '', '']);
-  sheet.typeRow(['', '陳大華', '大華保險', '保險規劃', '', '', '', '']);
-  sheet.typeRow(['', '林美麗', '美麗花藝', '花藝', '', '', '', '']);
-  sheet.typeRow(['', '張離開', '', '', '', '', '離會', '']);
+  sheet.typeRow(['', '王小明', '小明設計', '室內設計', '', '', '0912345678']);
+  sheet.typeRow(['', '陳大華', '大華保險', '保險規劃']);
+  sheet.typeRow(['', '林美麗', '美麗花藝', '花藝']);
+  sheet.typeRow(['', '張離開', '', '', '', '', '', '', '', '', '', '', '離會']);
+}
+
+function rowsOf(s, name) {
+  return s.ss.getSheetByName(name).objects();
 }
 
 const PALMS_ROWS = [
@@ -47,144 +53,246 @@ for (const order of ['normal', 'reverse']) {
     const res = s.api('public.bootstrap');
     assert.equal(res.ok, true, res.error);
     assert.equal(res.data.chapterName, 'BNI ○○分會');
-    assert.deepEqual(res.data.meetings.slice(0, 2).map((m) => m.label), ['2026-10-08（四）', '2026-10-15（四）']);
+    assert.deepEqual(res.data.events.slice(0, 2).map((e) => e.id), ['MTG-2026-10-08', 'MTG-2026-10-15']);
   });
 }
 
-test('管理功能需要正確的管理密碼', () => {
+test('帳號：第一次使用要先建立管理員、密碼不存明碼、登入失敗鎖定', () => {
   const s = createServer();
-  assert.match(s.api('auth.check', {}, '1234').error, /尚未設定管理密碼/);
-  s.scriptProps.setProperty('ADMIN_PIN', PIN);
-  assert.match(s.api('checkin.board', { date: '2026-10-08' }, '0000').error, /管理密碼錯誤/);
-  assert.equal(s.api('auth.check', {}, PIN).ok, true);
-  assert.match(s.api('nope', {}, PIN).error, /未知的操作/);
+  assert.equal(s.api('auth.status').data.needsSetup, true);
+  s.createAccount(ADMIN);
+  assert.equal(s.api('auth.status').data.needsSetup, false);
+  const stored = Object.entries(s.scriptProps.map).filter(([k]) => k.startsWith('PWD_'));
+  assert.equal(stored.length, 1);
+  assert.ok(!stored[0][1].includes(ADMIN.password));
+  assert.ok(!JSON.stringify(rowsOf(s, '帳號')).includes(ADMIN.password));
+
+  assert.match(s.api('auth.login', { username: 'joy', password: 'wrong-pass' }).error, /帳號或密碼錯誤/);
+  assert.match(s.api('auth.login', { username: 'nobody', password: 'wrong-pass' }).error, /帳號或密碼錯誤/);
+  for (let i = 0; i < 4; i++) s.api('auth.login', { username: 'JOY', password: 'wrong-pass' });
+  assert.match(s.api('auth.login', ADMIN).error, /15 分鐘後再試/);
+  assert.throws(() => s.createAccount({ ...ADMIN, displayName: '重複' }), /已經有人使用/);
+  assert.throws(() => s.createAccount({ ...ADMIN, username: 'x' }), /帳號需/);
+  assert.throws(() => s.createAccount({ ...ADMIN, username: 'short', password: '1234' }), /至少 8 碼/);
 });
 
-test('會員名單：自動補會員ID、修正手機、排除離會', () => {
+test('帳號：token 驗證、過期、改密碼與停用都會讓舊登入失效', () => {
   const s = setup();
-  addMembersByHand(s);
-  const board = s.admin('checkin.board', { date: '2026-10-08' });
-  assert.deepEqual(board.members.map((m) => [m.id, m.name]), [['M001', '王小明'], ['M002', '陳大華'], ['M003', '林美麗']]);
-  const sheetRows = s.ss.getSheetByName('會員名單').objects();
-  assert.equal(sheetRows[3]['會員ID'], 'M004');
-  const pub = s.api('public.bootstrap').data;
-  assert.deepEqual(pub.members.map((m) => m.name), ['王小明', '陳大華', '林美麗']);
+  assert.equal(s.api('home.data', {}, '').code, 'AUTH');
+  const parts = s.token.split('.');
+  const forged = [parts[0], String(Number(parts[1]) + 999999), parts[2], parts[3]].join('.');
+  assert.equal(s.api('home.data', {}, forged).code, 'AUTH');
+  assert.equal(s.api('home.data', {}, s.token).ok, true);
+
+  const changed = s.admin('auth.changePassword', { currentPassword: ADMIN.password, newPassword: 'new-pass-456' });
+  assert.equal(s.api('home.data', {}, s.token).code, 'AUTH');
+  assert.equal(s.api('home.data', {}, changed.token).ok, true);
+  assert.match(s.api('auth.changePassword', { currentPassword: 'nope', newPassword: 'whatever-1' }, changed.token).error, /目前的密碼不正確/);
+
+  const admin = s.as(changed.token);
+  const staff = admin('accounts.create', { username: 'amy', displayName: 'Amy', roles: ['來賓接待'], password: 'amy-pass-123' });
+  const amyToken = s.login('amy', 'amy-pass-123');
+  assert.equal(s.api('home.data', {}, amyToken).ok, true);
+  admin('accounts.update', { id: staff.id, displayName: 'Amy', roles: ['來賓接待'], status: '停用' });
+  assert.equal(s.api('home.data', {}, amyToken).code, 'AUTH');
+  assert.match(s.api('auth.login', { username: 'amy', password: 'amy-pass-123' }).error, /帳號或密碼錯誤/);
+
+  s.setNow('2026-10-23T07:00:00+08:00'); // 15 天後
+  assert.equal(s.api('home.data', {}, changed.token).code, 'AUTH');
 });
 
-test('來賓報名：存成文字、擋重複與機器人、日期要合理', () => {
+test('權限：依角色限制功能，且至少保留一位管理員', () => {
+  const s = setup();
+  const me = s.admin('app.bootstrap').account;
+  s.admin('accounts.create', { username: 'amy', displayName: 'Amy', title: '來賓接待', roles: '來賓接待', password: 'amy-pass-123' });
+  s.admin('accounts.create', { username: 'ben', displayName: 'Ben', roles: ['主席團'], password: 'ben-pass-123' });
+  s.admin('accounts.create', { username: 'cara', displayName: 'Cara', roles: ['財務'], password: 'cara-pass-123' });
+  const amy = s.login('amy', 'amy-pass-123');
+  const ben = s.login('ben', 'ben-pass-123');
+  const cara = s.login('cara', 'cara-pass-123');
+
+  const amyBoot = s.api('app.bootstrap', {}, amy).data;
+  assert.ok(amyBoot.perms.includes('checkin.attendance.manage'));
+  assert.ok(!amyBoot.perms.includes('palms.report.view'));
+  assert.equal(s.api('checkin.board', { eventId: MTG }, amy).ok, true);
+  assert.match(s.api('palms.periods', {}, amy).error, /沒有使用這個功能的權限/);
+  assert.match(s.api('members.list', {}, amy).error, /權限/);
+  assert.equal(s.api('settings.get', {}, ben).ok, true);
+  assert.match(s.api('accounts.list', {}, ben).error, /權限/);
+  assert.equal(s.api('members.list', {}, cara).ok, true);
+  assert.match(s.api('members.save', { name: '新人' }, cara).error, /權限/);
+  assert.match(s.api('checkin.board', { eventId: MTG }, cara).error, /權限/);
+
+  assert.match(s.api('accounts.update', { id: me.id, displayName: 'Joy', roles: ['系統管理員'], status: '停用' }, s.token).error, /不能停用自己/);
+  assert.match(s.api('accounts.update', { id: me.id, displayName: 'Joy', roles: ['主席團'] }, s.token).error, /至少要保留一位/);
+  assert.match(s.api('accounts.delete', { id: me.id }, s.token).error, /不能刪除自己/);
+  const list = s.admin('accounts.list');
+  assert.deepEqual(list.accounts.map((a) => a.username), ['joy', 'amy', 'ben', 'cara']);
+  assert.ok(list.roles.some((r) => r.name === '會員委員會'));
+  const benId = list.accounts.find((a) => a.username === 'ben').id;
+  s.admin('accounts.delete', { id: benId });
+  assert.equal(s.api('home.data', {}, ben).code, 'AUTH');
+  assert.equal(rowsOf(s, '帳號').find((r) => r['帳號'] === 'ben')['已刪除'], '是');
+  s.admin('accounts.resetPassword', { id: list.accounts.find((a) => a.username === 'cara').id, password: 'cara-new-123' });
+  assert.equal(s.api('home.data', {}, cara).code, 'AUTH');
+  assert.ok(s.login('cara', 'cara-new-123'));
+});
+
+test('會員名冊：自動補ID、修正手機、排除離會、新增修改、軟刪除、到期提醒', () => {
   const s = setup();
   addMembersByHand(s);
-  const ok = s.api('guest.register', {
-    date: '2026-10-08', name: '來賓甲', company: '=HYPERLINK("http://x")', category: '室內設計',
-    phone: '0922000111', email: 'a@example.com', inviter: '王小明'
+  const list = s.admin('members.list');
+  assert.deepEqual(list.map((m) => [m.id, m.name]), [['M001', '王小明'], ['M002', '陳大華'], ['M003', '林美麗']]);
+  assert.equal(list[0].phone, '0912345678');
+  assert.equal(s.admin('members.list', { includeInactive: true }).length, 4);
+  const created = s.admin('members.save', { name: '黃新人', category: '律師', expiryDate: '2026/11/01', joinDate: '2025-11-01' });
+  assert.equal(created.id, 'M005');
+  assert.equal(created.expiryDate, '2026-11-01');
+  assert.match(s.api('members.save', { name: '王小明' }, s.token).error, /已經有/);
+  assert.match(s.api('members.save', { name: '錯日期', expiryDate: 'abc' }, s.token).error, /到期日格式/);
+  s.admin('members.save', { id: 'M002', name: '陳大華', category: '保險規劃', expiryDate: '2026-09-30' });
+  const home = s.admin('home.data');
+  assert.deepEqual(home.cards.expiring.members.map((m) => [m.name, m.daysLeft]), [['陳大華', -8], ['黃新人', 24]]);
+  s.admin('members.delete', { id: 'M003' });
+  assert.deepEqual(s.admin('members.list').map((m) => m.id), ['M001', 'M002', 'M005']);
+  assert.equal(rowsOf(s, '會員名單').find((r) => r['會員ID'] === 'M003')['已刪除'], '是');
+});
+
+test('活動：每週例會自動產生、例會覆寫與停會、其他活動新增與軟刪除', () => {
+  const s = setup();
+  const oct = s.admin('events.list', { from: '2026-10-01', to: '2026-10-31' });
+  assert.deepEqual(oct.map((e) => e.date), ['2026-10-01', '2026-10-08', '2026-10-15', '2026-10-22', '2026-10-29']);
+  assert.equal(oct[1].timeLabel, '07:00–09:00');
+  assert.equal(oct[1].isMeeting, true);
+
+  const meeting = s.admin('events.save', { id: 'MTG-2026-10-15', place: '暮溢共享空間', startTime: '06:30', endTime: '09:00', description: '換場地' });
+  assert.deepEqual([meeting.place, meeting.timeLabel, meeting.name], ['暮溢共享空間', '06:30–09:00', '例會']);
+  assert.equal(s.admin('events.status', { id: 'MTG-2026-10-22', cancelled: true }).cancelled, true);
+  assert.equal(s.admin('events.status', { id: 'MTG-2026-10-22', cancelled: false }).cancelled, false);
+  assert.match(s.api('events.delete', { id: 'MTG-2026-10-22' }, s.token).error, /不能刪除/);
+
+  const ev = s.admin('events.save', { type: '共識會議', name: '共識會議', date: '2026-10-16', startTime: '06:30', endTime: '09:00', place: '暮溢共享空間', openRegistration: false });
+  assert.ok(ev.id.startsWith('E'));
+  assert.equal(ev.isMeeting, false);
+  assert.match(s.api('events.save', { type: '培訓', date: '2026-10-20', fee: 'abc' }, s.token).error, /費用請填數字/);
+  assert.match(s.api('events.save', { type: '培訓', date: '2026-10-20', startTime: '10:00', endTime: '09:00' }, s.token).error, /結束時間/);
+  const after = s.admin('events.list', { from: '2026-10-01', to: '2026-10-31' });
+  assert.deepEqual(after.map((e) => e.date), ['2026-10-01', '2026-10-08', '2026-10-15', '2026-10-16', '2026-10-22', '2026-10-29']);
+  s.admin('events.delete', { id: ev.id });
+  assert.equal(s.admin('events.list', { from: '2026-10-16', to: '2026-10-16' }).length, 0);
+  assert.equal(rowsOf(s, '活動').find((r) => r['活動ID'] === ev.id)['已刪除'], '是');
+  const opts = s.admin('events.options', {});
+  assert.equal(opts.defaultId, MTG);
+});
+
+test('報名：例會來賓、資料存成文字、重複與機器人、停會與名額、會員報名其他活動', () => {
+  const s = setup();
+  addMembersByHand(s);
+  s.admin('settings.save', { guestFee: '500' });
+  const ok = s.api('public.register', {
+    eventId: MTG, name: '來賓甲', company: '=HYPERLINK("http://x")', category: '室內設計', phone: '0922000111', inviter: '王小明'
   });
   assert.equal(ok.ok, true, ok.error);
   assert.equal(ok.data.duplicate, false);
-  const dup = s.api('guest.register', { date: '2026-10-08', name: '來賓 甲', category: '室內設計', phone: '0922-000-111' });
-  assert.equal(dup.data.duplicate, true);
-  assert.match(s.api('guest.register', { date: '2026-10-08', name: 'bot', category: 'x', website: 'spam' }).error, /送出失敗/);
-  assert.match(s.api('guest.register', { date: '2027-12-01', name: '太遠', category: 'x' }).error, /例會日期/);
-  assert.match(s.api('guest.register', { date: '2026-10-08', name: '沒行業' }).error, /專業別/);
+  assert.equal(s.api('public.register', { eventId: MTG, name: '來賓 甲', category: '室內設計', phone: '0922-000-111' }).data.duplicate, true);
+  assert.match(s.api('public.register', { eventId: MTG, name: 'bot', category: 'x', website: 'spam' }).error, /送出失敗/);
+  assert.match(s.api('public.register', { eventId: MTG, name: '沒行業' }).error, /專業別/);
+  assert.match(s.api('public.register', { eventId: 'MTG-2026-10-01', name: '過期', category: 'x' }).error, /不開放報名/);
+  assert.match(s.api('public.register', { eventId: 'MTG-2026-10-09', name: '編造日期', category: 'x' }).error, /找不到這場例會/);
+  assert.match(s.api('public.register', { eventId: 'E-NOPE', name: '不存在', category: 'x' }).error, /找不到這場活動/);
+  assert.match(s.api('events.status', { id: 'MTG-2026-10-09', cancelled: true }, s.token).error, /找不到這場例會/);
+  s.admin('events.status', { id: 'MTG-2026-10-15', cancelled: true });
+  assert.match(s.api('public.register', { eventId: 'MTG-2026-10-15', name: '停會', category: 'x' }).error, /已取消/);
 
-  const row = s.ss.getSheetByName('來賓名單').objects()[0];
-  assert.equal(row['手機'], '0922000111');
-  assert.equal(row['公司'], '=HYPERLINK("http://x")');
-  assert.equal(row['例會日期'], '2026-10-08');
-  const list = s.admin('guest.list', { date: '2026-10-08' });
-  assert.equal(list.length, 1);
-  assert.equal(list[0].phone, '0922000111');
+  const row = rowsOf(s, '報名名單')[0];
+  assert.deepEqual([row['手機'], row['公司'], row['活動日期'], row['身分']], ['0922000111', '=HYPERLINK("http://x")', '2026-10-08', '來賓']);
+
+  const ev = s.admin('events.save', { type: '聯誼', name: '中秋聯誼', date: '2026-10-20', openRegistration: true, fee: '800', capacity: '2' });
+  const coerced = s.api('public.register', { eventId: MTG, role: '會員', memberId: 'M001', name: '假會員', category: '測試' }).data.registration;
+  assert.equal(coerced.role, '來賓', '例會的公開報名一律算來賓');
+  const member = s.api('public.register', { eventId: ev.id, role: '會員', memberId: 'M001' }).data.registration;
+  assert.deepEqual([member.role, member.name, member.category], ['會員', '王小明', '室內設計']);
+  assert.equal(s.api('public.register', { eventId: ev.id, name: '朋友A', category: '設計' }).ok, true);
+  assert.match(s.api('public.register', { eventId: ev.id, name: '朋友B', category: '設計' }).error, /名額已滿/);
+  const pub = s.api('public.bootstrap').data;
+  assert.ok(!pub.events.some((e) => e.id === ev.id), '額滿的活動不出現在報名頁');
+  assert.ok(!pub.events.some((e) => e.id === 'MTG-2026-10-15'), '停會的例會不出現在報名頁');
+  const added = s.admin('registrations.add', { eventId: ev.id, name: '幹部代登', category: '顧問' });
+  assert.equal(added.registration.source, '代登');
+  assert.match(s.api('registrations.add', { eventId: MTG, role: '會員', memberId: 'M001' }, s.token).error, /簽到/);
 });
 
-test('會員簽到：準時 P、遲到 L、代理、清除、未簽到記缺席', () => {
+test('簽到：準時 P、遲到 L、代理、清除、未簽到記缺席、來賓簽到繳費', () => {
   const s = setup();
   addMembersByHand(s);
-  const date = '2026-10-08';
-  assert.equal(s.admin('checkin.member', { date, memberId: 'M001', status: 'auto' }).status, 'P');
+  s.admin('settings.save', { guestFee: '500' });
+  assert.equal(s.admin('checkin.member', { eventId: MTG, memberId: 'M001', status: 'auto' }).status, 'P');
   s.setNow('2026-10-08T07:05:00+08:00');
-  const late = s.admin('checkin.member', { date, memberId: 'M002', status: 'auto' });
-  assert.equal(late.status, 'L');
-  assert.equal(late.checkedInAt, '2026-10-08 07:05:00');
-  const sub = s.admin('checkin.member', { date, memberId: 'M003', status: 'S', substitute: '代理人乙' });
-  assert.equal(sub.substitute, '代理人乙');
-  s.admin('checkin.member', { date, memberId: 'M002', status: '' });
-  assert.equal(s.admin('checkin.markAbsent', { date }).count, 1);
-
-  const board = s.admin('checkin.board', { date });
+  const late = s.admin('checkin.member', { eventId: MTG, memberId: 'M002', status: 'auto' });
+  assert.deepEqual([late.status, late.checkedInAt], ['L', '2026-10-08 07:05:00']);
+  assert.equal(s.admin('checkin.member', { eventId: MTG, memberId: 'M003', status: 'S', substitute: '代理人乙' }).substitute, '代理人乙');
+  s.admin('checkin.member', { eventId: MTG, memberId: 'M002', status: '' });
+  assert.equal(s.admin('checkin.markAbsent', { eventId: MTG }).count, 1);
+  const board = s.admin('checkin.board', { eventId: MTG });
   assert.deepEqual(board.members.map((m) => m.status), ['P', 'A', 'S']);
-  assert.equal(board.isToday, true);
-  const rows = s.ss.getSheetByName('會員出席').objects();
-  assert.equal(rows.length, 3);
-  assert.equal(rows[0]['例會日期'], '2026-10-08');
-  assert.match(s.api('checkin.member', { date, memberId: 'M999', status: 'P' }, PIN).error, /找不到這位會員/);
-  assert.match(s.api('checkin.member', { date, memberId: 'M001', status: 'X' }, PIN).error, /不正確的出席狀態/);
-  // 不是當天：補登一律記 P、不寫簽到時間
-  const past = s.admin('checkin.member', { date: '2026-10-01', memberId: 'M001', status: 'auto' });
+  assert.equal(rowsOf(s, '會員出席').length, 3, '清除只清狀態，不刪列');
+  assert.match(s.api('checkin.member', { eventId: MTG, memberId: 'M999', status: 'P' }, s.token).error, /找不到這位會員/);
+  assert.match(s.api('checkin.member', { eventId: MTG, memberId: 'M001', status: 'X' }, s.token).error, /不正確的出席狀態/);
+  const past = s.admin('checkin.member', { eventId: 'MTG-2026-10-01', memberId: 'M001', status: 'auto' });
   assert.deepEqual([past.status, past.checkedInAt], ['P', '']);
+
+  const walk = s.admin('registrations.walkin', { eventId: MTG, name: '現場丙', category: '律師', paid: true });
+  assert.deepEqual([walk.registration.source, walk.registration.paid, walk.registration.paidAmount], ['現場', true, 500]);
+  assert.ok(walk.registration.checkedInAt);
+  const reg = s.api('public.register', { eventId: MTG, name: '報名丁', category: '會計' }).data.registration;
+  const updated = s.admin('registrations.update', { id: reg.id, patch: { checkedIn: true, paid: true, company: '丁事務所' } });
+  assert.deepEqual([updated.paid, updated.company, updated.checkedInAt], [true, '丁事務所', '2026-10-08 07:05:00']);
+  assert.equal(s.admin('registrations.update', { id: reg.id, patch: { checkedIn: false } }).checkedInAt, '');
+  assert.match(s.api('registrations.update', { id: reg.id, patch: { name: ' ' } }, s.token).error, /不能空白/);
+  s.admin('registrations.delete', { id: walk.registration.id });
+  assert.deepEqual(s.admin('registrations.list', { eventId: MTG }).map((g) => g.name), ['報名丁']);
+  assert.equal(rowsOf(s, '報名名單').length, 2, '刪除是軟刪除');
+
+  const ev = s.admin('events.save', { type: '培訓', name: '新會員培訓', date: '2026-10-08', openRegistration: true });
+  assert.equal(s.admin('checkin.board', { eventId: ev.id }).members.length, 0);
+  assert.match(s.api('checkin.member', { eventId: ev.id, memberId: 'M001', status: 'P' }, s.token).error, /只在例會/);
 });
 
-test('現場來賓、簽到繳費、刪除', () => {
-  const s = setup();
-  const date = '2026-10-08';
-  const walk = s.admin('guest.walkin', { date, name: '現場丙', category: '律師', paid: true });
-  assert.equal(walk.guest.source, '現場');
-  assert.equal(walk.guest.paid, true);
-  assert.ok(walk.guest.checkedInAt);
-  const reg = s.api('guest.register', { date, name: '報名丁', category: '會計' }).data.guest;
-  const updated = s.admin('guest.update', { id: reg.id, patch: { checkedIn: true, paid: true, company: '丁事務所' } });
-  assert.equal(updated.paid, true);
-  assert.equal(updated.company, '丁事務所');
-  assert.equal(updated.checkedInAt, '2026-10-08 06:50:00');
-  assert.equal(s.admin('guest.update', { id: reg.id, patch: { checkedIn: false } }).checkedInAt, '');
-  assert.match(s.api('guest.update', { id: reg.id, patch: { name: ' ' } }, PIN).error, /不能空白/);
-  s.admin('guest.delete', { id: walk.guest.id });
-  assert.deepEqual(s.admin('guest.list', { date }).map((g) => g.name), ['報名丁']);
-});
-
-test('列印資料：在籍會員與當天來賓', () => {
+test('列印資料：例會有在籍會員與當天來賓，活動只有報名名單', () => {
   const s = setup();
   addMembersByHand(s);
-  s.api('guest.register', { date: '2026-10-08', name: '來賓甲', category: '設計', inviter: '王小明' });
-  s.api('guest.register', { date: '2026-10-15', name: '下週來賓', category: '設計' });
-  const data = s.admin('print.data', { date: '2026-10-08' });
+  s.api('public.register', { eventId: MTG, name: '來賓甲', category: '設計', inviter: '王小明' });
+  s.api('public.register', { eventId: 'MTG-2026-10-15', name: '下週來賓', category: '設計' });
+  const data = s.admin('print.data', { eventId: MTG });
   assert.equal(data.dateLabel, '2026-10-08（四）');
   assert.equal(data.members.length, 3);
-  assert.deepEqual(data.guests.map((g) => g.name), ['來賓甲']);
+  assert.deepEqual(data.registrations.map((g) => g.name), ['來賓甲']);
   assert.equal(data.settings.badgeWidth, 90);
 });
 
-test('PALMS：預覽、儲存、重新匯入覆蓋、統計、LINE 週報、刪除', () => {
+test('PALMS：預覽、儲存、重新匯入以軟刪除覆蓋、統計、LINE 週報、刪除', () => {
   const s = setup();
   addMembersByHand(s);
   const preview = s.admin('palms.preview', { rows: PALMS_ROWS, fileName: 'palms.xls' });
   assert.deepEqual(preview.period, { from: '2026-09-24', to: '2026-09-30' });
   assert.deepEqual(preview.newNames, ['黃新人']);
-
   const saved = s.admin('palms.save', { rows: PALMS_ROWS, from: '2026-09-24', to: '2026-09-30' });
   assert.deepEqual([saved.count, saved.replaced, saved.addedMembers], [3, false, ['黃新人']]);
   const again = s.admin('palms.save', { rows: PALMS_ROWS, from: '2026-09-24', to: '2026-09-30' });
-  assert.equal(again.replaced, true);
-  assert.deepEqual(again.addedMembers, []);
-  assert.equal(s.ss.getSheetByName('PALMS').objects().length, 3);
-  assert.equal(s.ss.getSheetByName('PALMS').objects()[0]['1-2-1'], 2);
+  assert.deepEqual([again.replaced, again.addedMembers], [true, []]);
+  const sheetRows = rowsOf(s, 'PALMS');
+  assert.equal(sheetRows.length, 6);
+  assert.equal(sheetRows.filter((r) => r['已刪除'] === '是').length, 3);
+  assert.equal(sheetRows[3]['1-2-1'], 2);
 
   s.admin('palms.save', { rows: PALMS_ROWS, from: '2026-10-01', to: '2026-10-07' });
-  const periods = s.admin('palms.periods');
-  assert.deepEqual(periods.map((p) => p.from), ['2026-10-01', '2026-09-24']);
-  assert.equal(periods[0].totals.TYFCB, 30000);
-
+  assert.deepEqual(s.admin('palms.periods').map((p) => p.from), ['2026-10-01', '2026-09-24']);
   const summary = s.admin('palms.summary', { from: '2026-09-01', to: '2026-10-31' });
   const wang = summary.members.find((m) => m.name === '王小明');
   assert.deepEqual([wang.periods, wang.P, wang.TYFCB, wang.referralsGiven], [2, 2, 60000, 6]);
-  assert.equal(summary.absenceAlert, 3);
-
-  const text = s.admin('palms.lineText', { from: '2026-09-24', to: '2026-09-30' });
-  assert.match(text, /PALMS 週報/);
-  assert.match(text, /感謝成交 NT\$30,000/);
-
+  assert.match(s.admin('palms.lineText', { from: '2026-09-24', to: '2026-09-30' }), /感謝成交 NT\$30,000/);
   assert.equal(s.admin('palms.delete', { from: '2026-09-24', to: '2026-09-30' }).count, 3);
   assert.deepEqual(s.admin('palms.periods').map((p) => p.from), ['2026-10-01']);
-  assert.match(s.api('palms.save', { rows: PALMS_ROWS, from: '', to: '' }, PIN).error, /請填寫 PALMS 期間/);
-  assert.match(s.api('palms.lineText', { from: '2025-01-01', to: '2025-01-31' }, PIN).error, /沒有 PALMS 資料/);
 });
 
 test('工作表列數用完時自動加列', () => {
@@ -192,19 +300,44 @@ test('工作表列數用完時自動加列', () => {
   s.admin('palms.periods'); // 建立 PALMS 工作表
   s.ss.getSheetByName('PALMS').maxRows = 3;
   s.admin('palms.save', { rows: PALMS_ROWS, from: '2026-09-24', to: '2026-09-30', syncMembers: false });
-  assert.equal(s.ss.getSheetByName('PALMS').objects().length, 3);
+  assert.equal(rowsOf(s, 'PALMS').length, 3);
 });
 
-test('設定：儲存後影響例會日期與遲到判定', () => {
+test('設定與每週提醒', () => {
+  const s = setup();
+  const saved = s.admin('settings.save', {
+    chapterName: 'BNI 震宇分會', meetingWeekday: '星期五', meetingTime: '6:30', meetingEndTime: '09:00', lateAfter: '6:45', meetingPlace: '暮溢共享空間', guestFee: '500'
+  });
+  assert.deepEqual([saved.meetingWeekdayLabel, saved.meetingTime, saved.lateAfter, saved.guestFee], ['五', '06:30', '06:45', 500]);
+  assert.equal(rowsOf(s, '設定').find((r) => r['項目'] === '遲到判定時間')['內容'], '06:45');
+  assert.match(s.api('settings.save', { meetingWeekday: '八' }, s.token).error, /例會星期/);
+  assert.match(s.api('settings.save', { guestFee: '五百' }, s.token).error, /來賓費用請填數字/);
+  assert.match(s.api('settings.save', { replyTo: 'abc' }, s.token).error, /回覆信箱/);
+
+  const page = s.admin('settings.get');
+  assert.deepEqual(page.reminders.map((r) => [r.weekdayLabel, r.time, r.content]), [['三', '12:00', 'BNI Connect 登錄截止']]);
+  const r = s.admin('reminders.save', { weekday: '四', time: '20:00', content: '明天{{例會時間}}例會，地點：{{例會地點}}', pushLine: true });
+  assert.equal(r.pushLine, true);
+  s.admin('reminders.save', { id: page.reminders[0].id, weekday: '四', time: '12:00', content: 'BNI Connect 登錄截止' });
+  const home = s.admin('home.data');
+  const thu = home.days.find((d) => d.weekday === '四');
+  assert.deepEqual(thu.items.map((i) => i.title), ['BNI Connect 登錄截止', '明天06:30–09:00例會，地點：暮溢共享空間']);
+  s.admin('reminders.delete', { id: r.id });
+  assert.equal(s.admin('settings.get').reminders.length, 1);
+});
+
+test('首頁：這一週、下一場例會與活動、報名人數', () => {
   const s = setup();
   addMembersByHand(s);
-  const saved = s.admin('settings.save', { chapterName: 'BNI 示範分會', meetingWeekday: '星期三', lateAfter: '6:45', guestFee: '500' });
-  assert.equal(saved.chapterName, 'BNI 示範分會');
-  assert.equal(saved.meetingWeekdayLabel, '三');
-  assert.equal(saved.lateAfter, '06:45');
-  assert.equal(s.ss.getSheetByName('設定').objects()[3]['內容'], '06:45');
-  assert.equal(s.admin('admin.bootstrap').nextMeeting, '2026-10-14');
-  assert.equal(s.admin('checkin.member', { date: '2026-10-08', memberId: 'M001', status: 'auto' }).status, 'L');
-  assert.match(s.api('settings.save', { meetingWeekday: '八' }, PIN).error, /例會星期/);
-  assert.match(s.api('settings.save', { lateAfter: 'abc' }, PIN).error, /遲到判定時間/);
+  s.api('public.register', { eventId: MTG, name: '來賓甲', category: '設計' });
+  s.admin('events.save', { type: '共識會議', name: '共識會議', date: '2026-10-16', startTime: '06:30', endTime: '09:00', place: '暮溢共享空間' });
+  const home = s.admin('home.data');
+  assert.deepEqual(home.days.map((d) => d.day), [8, 9, 10, 11, 12, 13, 14]);
+  assert.deepEqual(home.days[0].items.map((i) => i.title), ['例會']);
+  assert.deepEqual(home.days[6].items.map((i) => i.title), ['BNI Connect 登錄截止']);
+  assert.equal(home.nextMeeting.id, MTG);
+  assert.equal(home.nextMeeting.counts.guests, 1);
+  assert.equal(home.nextEvent.name, '共識會議');
+  s.setNow('2026-10-08T09:30:00+08:00'); // 例會已結束
+  assert.equal(s.admin('home.data').nextMeeting.id, 'MTG-2026-10-15');
 });

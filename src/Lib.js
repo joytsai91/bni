@@ -379,12 +379,91 @@ function isActiveMember(status) {
   return !/(離會|退會|停權|暫停|休會|inactive|left)/i.test(String(status == null ? '' : status));
 }
 
+/** 區間內（含頭尾）每週例會的日期 */
+function meetingDatesBetween(from, to, weekday) {
+  if (!(weekday >= 0 && weekday <= 6) || !from || !to || from > to) return [];
+  const list = [];
+  for (let d = nextMeetingDate(from, weekday); d <= to; d = addDays(d, 7)) list.push(d);
+  return list;
+}
+
+function timeRangeLabel(start, end) {
+  start = normalizeTime(start);
+  end = normalizeTime(end);
+  return start && end ? start + '–' + end : start;
+}
+
+/** 「主席團, 財務、來賓接待」這類用逗號、頓號或空白分隔的清單 */
+function parseList(value) {
+  const out = [];
+  String(value == null ? '' : value).split(/[,，、;；\s]+/).forEach(function (s) {
+    s = s.trim();
+    if (s && out.indexOf(s) < 0) out.push(s);
+  });
+  return out;
+}
+
+// ---------- 權限 ----------
+
+/** grant 可以是完整代碼、'finance.*' 這種整組，或 '*' 全部 */
+function permissionMatches(grant, code) {
+  if (grant === '*') return true;
+  if (grant.slice(-2) === '.*') return code.indexOf(grant.slice(0, -1)) === 0;
+  return grant === code;
+}
+
+/** 依帳號的角色算出權限代碼；角色裡 '-' 開頭的代碼表示排除。base 是每個人都有的權限 */
+function resolvePermissions(roleNames, roles, allCodes, base) {
+  const grants = [];
+  const denies = [];
+  roleNames.forEach(function (name) {
+    const role = roles.filter(function (r) { return r.name === name; })[0];
+    if (!role) return;
+    role.grants.forEach(function (g) {
+      if (g.charAt(0) === '-') denies.push(g.slice(1));
+      else grants.push(g);
+    });
+  });
+  return allCodes.filter(function (code) {
+    if (base.indexOf(code) >= 0) return true;
+    const granted = grants.some(function (g) { return permissionMatches(g, code); });
+    return granted && !denies.some(function (d) { return permissionMatches(d, code); });
+  });
+}
+
+/** code 可以是單一代碼或陣列（有其中一個就算有權限） */
+function hasPermission(perms, code) {
+  const codes = Array.isArray(code) ? code : [code];
+  return codes.some(function (c) { return perms.indexOf(c) >= 0; });
+}
+
+// ---------- 訊息範本 ----------
+
+/** 把 {{姓名}} 這類欄位換成實際資料，沒有資料的欄位換成空字串 */
+function fillTemplate(text, ctx) {
+  return String(text == null ? '' : text).replace(/\{\{\s*([^{}\s]+)\s*\}\}/g, function (_, key) {
+    const v = ctx && Object.prototype.hasOwnProperty.call(ctx, key) ? ctx[key] : '';
+    return v == null ? '' : String(v);
+  });
+}
+
+function templateKeys(text) {
+  const keys = [];
+  String(text == null ? '' : text).replace(/\{\{\s*([^{}\s]+)\s*\}\}/g, function (_, key) {
+    if (keys.indexOf(key) < 0) keys.push(key);
+    return '';
+  });
+  return keys;
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     PALMS_FIELDS, PALMS_LABELS, WEEKDAY_LABELS,
     normalizeHeader, toNumber, joinName, nameKey, isoDate, parseDateLoose, findPeriod, parsePalms,
     summarizePalms, findOverlaps, formatNumber, buildPalmsLineText,
     parseWeekday, weekdayOf, addDays, nextMeetingDate, upcomingMeetings, normalizeTime, checkinStatus,
-    toSheetText, normalizePhone, isActiveMember
+    toSheetText, normalizePhone, isActiveMember,
+    meetingDatesBetween, timeRangeLabel, parseList,
+    permissionMatches, resolvePermissions, hasPermission, fillTemplate, templateKeys
   };
 }

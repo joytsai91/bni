@@ -18,9 +18,14 @@
 
     function docHead(data, title, extra) {
       var s = data.settings;
+      var e = data.event;
       return '<div class="doc-head"><div class="doc-title"><span class="chapter">' + esc(s.chapterName) + '</span>' + esc(title) + '</div>' +
-        '<div class="doc-meta">例會日期：' + esc(data.dateLabel) + (s.meetingTime ? '　' + esc(s.meetingTime) : '') +
+        '<div class="doc-meta">' + esc(e.isMeeting ? '例會日期' : e.name) + '：' + esc(data.dateLabel) + (e.timeLabel ? '　' + esc(e.timeLabel) : '') +
         (extra ? '<br>' + extra : '') + '</div></div>';
+    }
+
+    function roleTag(p) {
+      return p && p.role === '會員' ? '會員' : '來賓';
     }
 
     function table(cols, rows) {
@@ -43,20 +48,22 @@
     }
 
     function guestSheet(data, opts) {
-      var fee = data.settings.guestFee;
+      var list = data.registrations;
+      var isMeeting = data.event.isMeeting;
+      var fee = data.event.fee;
       var blank = clampInt(opts.blankRows, 60);
-      if (!data.guests.length && !blank) return '';
-      var rows = data.guests.map(function (g, i) {
+      if (!list.length && !blank) return '';
+      var rows = list.map(function (g, i) {
         return '<tr><td class="c">' + (i + 1) + '</td><td class="name">' + esc(g.name) + '</td><td class="sm">' + esc(g.company) +
-          '</td><td class="sm">' + esc(g.category) + '</td><td class="sm">' + esc(g.phone) + '</td><td class="sm">' + esc(g.inviter) +
-          '</td><td></td><td></td></tr>';
+          '</td><td class="sm">' + esc(g.category) + '</td><td class="sm">' + esc(g.phone) + '</td><td class="sm">' +
+          esc(g.role === '會員' ? '會員' : g.inviter) + '</td><td></td><td></td></tr>';
       });
       for (var i = 0; i < blank; i++) {
-        rows.push('<tr><td class="c">' + (data.guests.length + i + 1) + '</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>');
+        rows.push('<tr><td class="c">' + (list.length + i + 1) + '</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>');
       }
-      return '<div class="doc">' + docHead(data, '來賓簽到表', '已報名 ' + data.guests.length + ' 位' + (fee ? '　來賓費用：' + esc(fee) : '')) +
-        table([['#', 9], ['姓名', 24], ['公司', 36], ['專業別', 26], ['手機', 28], ['邀請人', 20], ['簽名', 27], [fee ? '繳費' : '備註']], rows) +
-        '<div class="doc-foot"><span>歡迎蒞臨！請留下聯絡方式，會後我們會與您聯繫。</span><span>列印時間：' + esc(App.nowStamp()) + '</span></div></div>';
+      return '<div class="doc">' + docHead(data, isMeeting ? '來賓簽到表' : '活動簽到表', '已報名 ' + list.length + ' 位' + (fee ? '　費用：' + esc(App.money(fee)) : '')) +
+        table([['#', 9], ['姓名', 24], ['公司', 36], ['專業別', 26], ['手機', 28], [isMeeting ? '邀請人' : '邀請人/身分', 20], ['簽名', 27], [fee ? '繳費' : '備註']], rows) +
+        '<div class="doc-foot"><span>' + (isMeeting ? '歡迎蒞臨！請留下聯絡方式，會後我們會與您聯繫。' : '') + '</span><span>列印時間：' + esc(App.nowStamp()) + '</span></div></div>';
     }
 
     function badgeLayout(s) {
@@ -66,7 +73,7 @@
     }
 
     function badge(g, s) {
-      var top = '<div class="badge-top"><span class="chapter">' + esc(s.chapterName) + '</span><span class="badge-tag">來賓</span></div>';
+      var top = '<div class="badge-top"><span class="chapter">' + esc(s.chapterName) + '</span><span class="badge-tag">' + roleTag(g) + '</span></div>';
       if (!g) {
         return '<div class="badge blank">' + top + '<div class="badge-body"><div class="write-line">姓名</div>' +
           '<div class="write-line">公司／專業別</div></div></div>';
@@ -79,7 +86,7 @@
 
     function guestBadges(data, opts) {
       var s = data.settings;
-      var items = data.guests.slice();
+      var items = data.registrations.slice();
       for (var i = clampInt(opts.blankBadges, 100); i > 0; i--) items.push(null);
       if (!items.length) return '';
       var l = badgeLayout(s);
@@ -95,7 +102,7 @@
         '<div class="tent-name fit">' + esc(p.name) + '</div>' +
         (p.company ? '<div class="tent-company fit">' + esc(p.company) + '</div>' : '') +
         (p.category ? '<div class="tent-category fit">' + esc(p.category) + '</div>' : '') +
-        (isGuest ? '<div class="tent-foot"><span class="badge-tag">來賓</span>' + (p.inviter ? '邀請人：' + esc(p.inviter) : '') + '</div>' : '') +
+        (isGuest ? '<div class="tent-foot"><span class="badge-tag">' + roleTag(p) + '</span>' + (p.role !== '會員' && p.inviter ? '邀請人：' + esc(p.inviter) : '') + '</div>' : '') +
         '</div>';
     }
 
@@ -106,17 +113,17 @@
     }
 
     var KINDS = {
-      memberSheet: { title: '會員簽到表', doc: true, hint: 'A4 直式', empty: '會員名單是空的', render: memberSheet },
-      guestSheet: { title: '來賓簽到表', doc: true, hint: 'A4 直式', empty: '沒有來賓，也沒有設定空白列', render: guestSheet },
+      memberSheet: { title: '會員簽到表', doc: true, hint: 'A4 直式', empty: '會員名冊是空的', render: memberSheet },
+      guestSheet: { title: '簽到表', doc: true, hint: 'A4 直式', empty: '還沒有人報名，也沒有設定空白列', render: guestSheet },
       guestBadges: {
-        title: '來賓名牌', hint: '印好後沿虛線裁切', empty: '這次例會還沒有來賓（可以加印空白名牌）', render: guestBadges
+        title: '名牌', hint: '印好後沿虛線裁切', empty: '還沒有人報名（可以加印空白名牌）', render: guestBadges
       },
       guestTents: {
-        title: '來賓桌牌', hint: '一頁一位，沿中間虛線對折', empty: '這次例會還沒有來賓',
-        render: function (d) { return tents(d.guests, d.settings, true); }
+        title: '桌牌', hint: '一頁一位，沿中間虛線對折', empty: '還沒有人報名',
+        render: function (d) { return tents(d.registrations, d.settings, true); }
       },
       memberTents: {
-        title: '會員桌牌', hint: '一頁一位，沿中間虛線對折', empty: '會員名單是空的',
+        title: '會員桌牌', hint: '一頁一位，沿中間虛線對折', empty: '會員名冊是空的',
         render: function (d) { return tents(d.members, d.settings, false); }
       }
     };
@@ -181,7 +188,7 @@
         var root = document.getElementById('print-root');
         root.innerHTML =
           '<style>@media print { @page { size: A4 portrait; margin: ' + (k.doc ? '12mm' : '0') + '; } }</style>' +
-          '<div class="print-toolbar"><b>' + esc(k.title) + '</b><span class="grow">' + esc(data.dateLabel) + '・' + esc(k.hint) +
+          '<div class="print-toolbar"><b>' + esc(k.title) + '</b><span class="grow">' + esc(App.eventLabel(data.event)) + '・' + esc(k.hint) +
           '・列印時選 A4、縮放 100%</span><button type="button" class="btn btn-primary" data-print-action="print">列印</button>' +
           '<button type="button" class="btn" data-print-action="tab">在新分頁開啟</button>' +
           '<button type="button" class="btn" data-print-action="close">關閉</button></div>' +

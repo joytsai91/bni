@@ -134,3 +134,35 @@ test('LINE 週報文字', () => {
   assert.match(text, /一對一：陳大華 4、王小明 2/);
   assert.equal(L.formatNumber(-1234), '-1,234');
 });
+
+test('例會日期區間與時間標籤', () => {
+  assert.deepEqual(L.meetingDatesBetween('2026-10-01', '2026-10-31', 4), ['2026-10-01', '2026-10-08', '2026-10-15', '2026-10-22', '2026-10-29']);
+  assert.deepEqual(L.meetingDatesBetween('2026-10-02', '2026-10-07', 4), []);
+  assert.deepEqual(L.meetingDatesBetween('2026-10-01', '2026-10-31', -1), []);
+  assert.equal(L.timeRangeLabel('6:30', '09:00'), '06:30–09:00');
+  assert.equal(L.timeRangeLabel('07:00', ''), '07:00');
+  assert.deepEqual(L.parseList('主席團, 財務、來賓接待 財務'), ['主席團', '財務', '來賓接待']);
+});
+
+test('權限：萬用字元、排除、基本權限', () => {
+  const roles = [
+    { name: '管理員', grants: ['*'] },
+    { name: '主席團', grants: ['*', '-system.account.manage'] },
+    { name: '財務', grants: ['finance.*', 'members.member.view'] }
+  ];
+  const all = ['home.dashboard.view', 'finance.ledger.view', 'finance.dues.manage', 'members.member.view', 'members.member.manage', 'system.account.manage'];
+  const base = ['home.dashboard.view'];
+  assert.deepEqual(L.resolvePermissions(['管理員'], roles, all, base), all);
+  assert.deepEqual(L.resolvePermissions(['主席團'], roles, all, base), all.filter((c) => c !== 'system.account.manage'));
+  assert.deepEqual(L.resolvePermissions(['財務'], roles, all, base), ['home.dashboard.view', 'finance.ledger.view', 'finance.dues.manage', 'members.member.view']);
+  assert.deepEqual(L.resolvePermissions(['不存在'], roles, all, base), ['home.dashboard.view']);
+  assert.equal(L.permissionMatches('finance.*', 'financex.a.b'), false);
+  assert.equal(L.hasPermission(['a.b.c'], ['x.y.z', 'a.b.c']), true);
+  assert.equal(L.hasPermission(['a.b.c'], 'x.y.z'), false);
+});
+
+test('訊息範本填字', () => {
+  const text = '{{姓名}} 您好，{{ 例會日期 }}在{{例會地點}}見！{{不存在}}';
+  assert.equal(L.fillTemplate(text, { 姓名: '王小明', 例會日期: '2026-10-08（四）', 例會地點: '暮溢' }), '王小明 您好，2026-10-08（四）在暮溢見！');
+  assert.deepEqual(L.templateKeys(text), ['姓名', '例會日期', '例會地點', '不存在']);
+});

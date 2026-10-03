@@ -1,0 +1,261 @@
+<script>
+  /* 外框：登入、側邊選單（依權限顯示）、底部分頁、換頁、帳號選單、字體大小 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var $ = App.$;
+    var esc = App.esc;
+
+    App.pages = App.pages || {};
+    /** 頁面模組：{ title, perm, render(el, params) → 可回傳清理函式 } */
+    App.registerPage = function (id, def) {
+      App.pages[id] = def;
+    };
+
+    var NAV = [
+      { items: [{ id: 'home', label: '首頁' }] },
+      { group: '例會前', items: [{ id: 'events', label: '活動管理' }, { id: 'dashboard', label: '報名儀表板' }, { id: 'guests', label: '活動來賓' }] },
+      { group: '例會當天', items: [{ id: 'checkin', label: '簽到與列印' }, { id: 'showcase', label: '來賓速覽' }, { id: 'wheel', label: '幸運轉盤' }] },
+      { group: '例會後', items: [{ id: 'followup', label: '評議與追蹤' }, { id: 'industry', label: '產業分析' }, { id: 'palms', label: 'PALMS 報表' }] },
+      { group: '分會營運', items: [{ id: 'members', label: '會員名冊' }, { id: 'finance', label: '財務中心' }, { id: 'mail', label: '信件管理' }, { id: 'line', label: 'LINE 小助理' }] },
+      { group: '系統', items: [{ id: 'settings', label: '系統設定' }] }
+    ];
+    var BOTTOM = [
+      { id: 'home', label: '首頁', icon: 'home' },
+      { id: 'events', label: '活動', icon: 'calendar' },
+      { id: 'guests', label: '來賓', icon: 'guests' },
+      { id: 'checkin', label: '簽到', icon: 'check' },
+      { id: 'more', label: '更多', icon: 'menu' }
+    ];
+    var FONT_SIZES = [15, 17, 19];
+
+    var current = { id: '', cleanup: null };
+
+    App.allowed = function (id) {
+      var p = App.pages[id];
+      return !!p && (!p.perm || App.can(p.perm));
+    };
+
+    function renderNav() {
+      $('#drawer-nav').innerHTML = NAV.map(function (sec) {
+        var items = sec.items.filter(function (it) { return App.allowed(it.id); });
+        if (!items.length) return '';
+        return (sec.group ? '<div class="nav-group">' + esc(sec.group) + '</div>' : '') + items.map(function (it) {
+          return '<button type="button" class="nav-item' + (it.id === current.id ? ' active' : '') + '" data-go="' + it.id + '">' + esc(it.label) + '</button>';
+        }).join('');
+      }).join('');
+      $('#bottom-nav').innerHTML = BOTTOM.filter(function (it) { return it.id === 'more' || App.allowed(it.id); }).map(function (it) {
+        return '<button type="button" class="' + (it.id === current.id ? 'active' : '') + '" data-go="' + it.id + '">' +
+          App.icon(it.icon) + '<span>' + esc(it.label) + '</span></button>';
+      }).join('');
+    }
+
+    /** 換頁：params 會傳給頁面，例如 { eventId } */
+    App.go = function (id, params) {
+      if (!App.allowed(id)) id = 'home';
+      if (current.cleanup) {
+        try { current.cleanup(); } catch (e) { /* 清理失敗不影響換頁 */ }
+      }
+      current = { id: id, cleanup: null };
+      renderNav();
+      closeDrawer();
+      var content = $('#content');
+      content.innerHTML = '';
+      window.scrollTo(0, 0);
+      App.store('bni_page', id);
+      var cleanup = App.pages[id].render(content, params || {});
+      current.cleanup = typeof cleanup === 'function' ? cleanup : null;
+    };
+
+    function openDrawer() {
+      $('#drawer').classList.add('open');
+      $('#drawer-overlay').hidden = false;
+    }
+
+    function closeDrawer() {
+      $('#drawer').classList.remove('open');
+      $('#drawer-overlay').hidden = true;
+    }
+
+    function applyBranding() {
+      var s = App.session.settings;
+      var name = s.chapterName || '';
+      var m = /^BNI\s*/i.exec(name);
+      $('#top-title').innerHTML = '<span class="brand-text">BNI</span> ' + esc(m ? name.slice(m[0].length) : name);
+      $('#sys-name').textContent = s.systemName;
+      $('#sys-chapter').textContent = s.chapterName;
+      $('#who-name').textContent = App.session.account.displayName;
+      $('#who-title').textContent = App.session.account.title || App.session.account.roles.join('、');
+    }
+
+    function applyFontSize() {
+      var size = Number(App.store('bni_font')) || FONT_SIZES[0];
+      document.documentElement.style.setProperty('--base-size', size + 'px');
+    }
+
+    /** Aa：字體在三種大小之間切換 */
+    App.cycleFontSize = function () {
+      var size = Number(App.store('bni_font')) || FONT_SIZES[0];
+      var next = FONT_SIZES[(FONT_SIZES.indexOf(size) + 1) % FONT_SIZES.length];
+      App.store('bni_font', String(next));
+      applyFontSize();
+    };
+
+    // ---------- 登入 ----------
+
+    function showLogin(message) {
+      App.session = null;
+      $('#shell').hidden = true;
+      $('#login-view').hidden = false;
+      $('#login-error').textContent = message || '';
+      $('#login-error').hidden = !message;
+      App.api('auth.status').then(function (st) {
+        $('#login-title').textContent = st.systemName;
+        $('#login-sub').textContent = st.chapterName;
+        $('#setup-hint').hidden = !st.needsSetup;
+      }).catch(function () { /* 狀態只是輔助說明 */ });
+      setTimeout(function () { $('#login-username').focus(); }, 0);
+    }
+
+    App.onAuthError = function (message) {
+      App.setToken('');
+      App.modal.close(null);
+      showLogin(message);
+    };
+
+    function startApp() {
+      return App.api('app.bootstrap').then(function (boot) {
+        App.session = boot;
+        applyBranding();
+        $('#login-view').hidden = true;
+        $('#shell').hidden = false;
+        var last = App.store('bni_page');
+        App.go(App.allowed(last) ? last : 'home');
+      }).catch(function (err) {
+        if (err.code === 'AUTH') App.onAuthError(err.message);
+        else showLogin(err.message);
+      });
+    }
+
+    /** 設定或會員名單變動後重新取得共用資料 */
+    App.refreshSession = function () {
+      return App.api('app.bootstrap').then(function (boot) {
+        App.session = boot;
+        applyBranding();
+        renderNav();
+        return boot;
+      });
+    };
+
+    function logout() {
+      App.setToken('');
+      showLogin('');
+    }
+
+    // ---------- 帳號選單 ----------
+
+    function changePassword() {
+      var form = document.createElement('form');
+      form.className = 'form-grid';
+      form.innerHTML =
+        App.field('目前的密碼', '<input type="password" name="currentPassword" autocomplete="current-password">', true, '', 'full') +
+        App.field('新密碼', '<input type="password" name="newPassword" autocomplete="new-password">', true, '至少 8 碼', 'full') +
+        App.field('再輸入一次新密碼', '<input type="password" name="confirm" autocomplete="new-password">', true, '', 'full') +
+        '<button type="submit" hidden></button>';
+      App.modal.open({
+        title: '修改密碼',
+        body: form,
+        actions: [
+          { label: '取消', value: null },
+          {
+            label: '儲存', value: 'ok', cls: 'btn-primary', primary: true, validate: function () {
+              var v = App.formValues(form);
+              if (v.newPassword.length < 8) { App.toast('新密碼至少 8 碼', 'error'); return false; }
+              if (v.newPassword !== v.confirm) { App.toast('兩次輸入的新密碼不一樣', 'error'); return false; }
+              return true;
+            }
+          }
+        ]
+      }).then(function (v) {
+        if (v !== 'ok') return;
+        var data = App.formValues(form);
+        return App.api('auth.changePassword', { currentPassword: data.currentPassword, newPassword: data.newPassword }).then(function (res) {
+          App.setToken(res.token);
+          App.toast('密碼已更新，其他裝置需要重新登入');
+        });
+      }).catch(App.handleError);
+    }
+
+    /** 首頁右上角「名字 ▾」的選單 */
+    App.openAccountMenu = function (anchor) {
+      var holder = anchor.parentNode;
+      var old = holder.querySelector('.menu-pop');
+      if (old) {
+        old.remove();
+        return;
+      }
+      var pop = document.createElement('div');
+      pop.className = 'menu-pop';
+      pop.innerHTML = '<button type="button" data-act="password">修改密碼</button><button type="button" data-act="logout">登出</button>';
+      holder.appendChild(pop);
+      var away = function (e) {
+        if (!pop.contains(e.target) && e.target !== anchor) {
+          pop.remove();
+          document.removeEventListener('click', away, true);
+        }
+      };
+      document.addEventListener('click', away, true);
+      pop.addEventListener('click', function (e) {
+        var act = e.target.getAttribute('data-act');
+        pop.remove();
+        document.removeEventListener('click', away, true);
+        if (act === 'password') changePassword();
+        if (act === 'logout') logout();
+      });
+    };
+
+    // ---------- 啟動 ----------
+
+    function init() {
+      applyFontSize();
+      $('#menu-btn').innerHTML = App.icon('menu');
+      $('#drawer-close').innerHTML = App.icon('close');
+      $('#login-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var btn = $('#login-form button[type=submit]');
+        App.withButton(btn, function () {
+          $('#login-error').hidden = true;
+          return App.api('auth.login', {
+            username: $('#login-username').value.trim(),
+            password: $('#login-password').value
+          }).then(function (res) {
+            App.setToken(res.token);
+            $('#login-password').value = '';
+            return startApp();
+          }).catch(function (err) {
+            $('#login-error').textContent = err.message;
+            $('#login-error').hidden = false;
+          });
+        });
+      });
+      $('#logout-btn').addEventListener('click', logout);
+      $('#menu-btn').addEventListener('click', openDrawer);
+      $('#drawer-close').addEventListener('click', closeDrawer);
+      $('#drawer-overlay').addEventListener('click', closeDrawer);
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') closeDrawer();
+      });
+      document.addEventListener('click', function (e) {
+        var b = e.target.closest('[data-go]');
+        if (!b || !App.session) return;
+        var id = b.getAttribute('data-go');
+        if (id === 'more') openDrawer();
+        else App.go(id);
+      });
+      if (App.getToken()) startApp();
+      else showLogin('');
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+  })();
+</script>

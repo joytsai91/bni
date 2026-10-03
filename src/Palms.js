@@ -39,7 +39,7 @@ function savePalms_(d) {
     const old = t.rows
       .filter(function (r) { return r.from === period.from && r.to === period.to; })
       .map(function (r) { return r._row; });
-    if (old.length) Db.deleteRows(t, old);
+    old.forEach(function (rowNum) { Db.softDelete(t, rowNum); }); // 舊資料標記已刪除，保留在試算表
     Db.append(t, parsed.members.map(function (m) {
       const rec = { from: period.from, to: period.to, importedAt: stamp };
       Object.keys(m).forEach(function (k) { rec[k] = m[k]; });
@@ -100,7 +100,7 @@ function deletePalmsPeriod_(d) {
     const rows = t.rows
       .filter(function (r) { return r.from === period.from && r.to === period.to; })
       .map(function (r) { return r._row; });
-    Db.deleteRows(t, rows);
+    rows.forEach(function (rowNum) { Db.softDelete(t, rowNum); });
     return { count: rows.length };
   });
 }

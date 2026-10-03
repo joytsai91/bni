@@ -1,0 +1,244 @@
+<script>
+  /* PALMS 報表：上傳 BNI Connect 匯出檔 → 預覽 → 儲存；已匯入期間、會員統計、LINE 週報 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    var PALMS_COLS = [['P', 'P'], ['A', 'A'], ['L', 'L'], ['M', 'M'], ['S', 'S'], ['RGI', 'RGI'], ['RGO', 'RGO'],
+      ['RRI', 'RRI'], ['RRO', 'RRO'], ['V', 'V'], ['121', '1-2-1'], ['TYFCB', 'TYFCB'], ['CEU', 'CEU'], ['T', 'T']];
+    // SheetJS 官方 CDN 的 0.20.3（npm 與 cdnjs 上的 0.18.5 有已知漏洞）
+    var XLSX_URL = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+
+    function readFile(file) {
+      return new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function () { resolve(reader.result); };
+        reader.onerror = function () { reject(new Error('讀取檔案失敗')); };
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    function decodeText(buf) {
+      var bytes = new Uint8Array(buf);
+      var text = new TextDecoder('utf-8').decode(bytes);
+      if (text.indexOf('�') >= 0) {
+        try { text = new TextDecoder('big5').decode(bytes); } catch (e) { /* 瀏覽器不支援 Big5 就維持 UTF-8 */ }
+      }
+      return text.replace(/^﻿/, '');
+    }
+
+    /** BNI Connect 匯出的 .xls 有時其實是 HTML 表格，CSV 可能是 UTF-8 或 Big5 */
+    function workbookRows(buf, fileName) {
+      var XLSX = window.XLSX;
+      var head = String.fromCharCode.apply(null, new Uint8Array(buf.slice(0, 256))).replace(/^[\s﻿ï»¿]+/, '');
+      var isText = /\.(csv|txt|html?)$/i.test(fileName) || head.charAt(0) === '<';
+      var wb = isText ? XLSX.read(decodeText(buf), { type: 'string' }) : XLSX.read(new Uint8Array(buf), { type: 'array' });
+      var best = [];
+      wb.SheetNames.forEach(function (name) {
+        var rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '', blankrows: false });
+        if (rows.length > best.length) best = rows;
+      });
+      if (!best.length) throw new Error('檔案裡沒有資料');
+      return best;
+    }
+
+    function palmsTable(members, summary) {
+      var head = '<tr><th>姓名</th>' + (summary ? '<th class="num">期數</th>' : '') + PALMS_COLS.map(function (c) {
+        return '<th class="num">' + c[1] + '</th>';
+      }).join('') + '</tr>';
+      var body = members.map(function (m) {
+        return '<tr' + (m.alert ? ' class="alert"' : '') + '><td>' + esc(m.name) + (m.alert ? ' <span class="tag red">缺席提醒</span>' : '') + '</td>' +
+          (summary ? '<td class="num">' + m.periods + '</td>' : '') + PALMS_COLS.map(function (c) {
+            return '<td class="num">' + App.fmt(m[c[0]]) + '</td>';
+          }).join('') + '</tr>';
+      }).join('');
+      var foot = summary ? '<tr class="total"><td>合計</td><td></td>' + PALMS_COLS.map(function (c) {
+        return '<td class="num">' + App.fmt(summary.totals[c[0]]) + '</td>';
+      }).join('') + '</tr>' : '';
+      return '<div class="table-wrap"><table class="data"><thead>' + head + '</thead><tbody>' + body + foot + '</tbody></table></div>';
+    }
+
+    App.registerPage('palms', {
+      title: 'PALMS 報表',
+      perm: 'palms.report.view',
+      render: function (el) {
+        var canManage = App.can('palms.report.manage');
+        var preview = null;
+        el.innerHTML = '<div class="page-head"><div><h1>PALMS 報表</h1><p>上傳 BNI Connect 匯出檔，統計會員表現並產生 LINE 週報</p></div></div><div class="stack">' +
+          (canManage ? '<section class="card"><div class="card-head"><h2>匯入 PALMS 報表</h2></div>' +
+            '<p class="muted" style="margin:0">從 BNI Connect 匯出 PALMS 報表（Excel 或 CSV）後上傳；同一期間重新匯入會覆蓋舊資料（舊資料標記刪除，仍保留在試算表）。</p>' +
+            '<div class="file-pick"><input type="file" id="pm-file" accept=".xls,.xlsx,.csv,.htm,.html"><span class="muted small" id="pm-status"></span></div>' +
+            '<div id="pm-preview" class="stack" hidden style="margin-top:12px"></div></section>' : '') +
+          '<section class="card"><div class="card-head"><h2>已匯入期間</h2></div><div id="pm-periods"></div></section>' +
+          '<section class="card"><div class="card-head"><h2>會員統計</h2></div><div class="toolbar" style="margin-bottom:12px">' +
+          '<input type="date" id="pm-from"> ～ <input type="date" id="pm-to"><button type="button" class="btn btn-primary" id="pm-run">查詢</button>' +
+          '<button type="button" class="btn" id="pm-3m">近 3 個月</button><button type="button" class="btn" id="pm-6m">近 6 個月</button></div>' +
+          '<div id="pm-summary"></div></section></div>';
+        var $ = function (sel) { return el.querySelector(sel); };
+
+        function loadPeriods() {
+          App.skeleton($('#pm-periods'), 3);
+          return App.api('palms.periods').then(renderPeriods).catch(function (err) {
+            App.errorState($('#pm-periods'), err);
+            App.handleError(err);
+          });
+        }
+
+        function renderPeriods(list) {
+          if (!list.length) {
+            App.emptyState($('#pm-periods'), '還沒有匯入 PALMS 報表');
+            return;
+          }
+          $('#pm-periods').innerHTML = '<div class="table-wrap"><table class="data"><thead><tr><th>期間</th><th class="num">人數</th>' +
+            '<th class="num">出席</th><th class="num">缺席</th><th class="num">引薦</th><th class="num">來賓</th><th class="num">1-2-1</th>' +
+            '<th class="num">感謝成交</th><th>匯入時間</th><th></th></tr></thead><tbody>' + list.map(function (p) {
+              var t = p.totals;
+              return '<tr data-from="' + esc(p.from) + '" data-to="' + esc(p.to) + '"><td>' + esc(p.from === p.to ? p.from : p.from + ' ～ ' + p.to) +
+                '</td><td class="num">' + p.count + '</td><td class="num">' + App.fmt(t.P) + '</td><td class="num">' + App.fmt(t.A) +
+                '</td><td class="num">' + App.fmt(t.referralsGiven) + '</td><td class="num">' + App.fmt(t.V) + '</td><td class="num">' + App.fmt(t['121']) +
+                '</td><td class="num">' + App.fmt(t.TYFCB) + '</td><td>' + esc(p.importedAt) + '</td><td>' +
+                '<button type="button" class="btn btn-sm" data-act="line">LINE 週報</button> ' +
+                (canManage ? '<button type="button" class="btn btn-sm btn-danger" data-act="delete">刪除</button>' : '') + '</td></tr>';
+            }).join('') + '</tbody></table></div>';
+        }
+
+        function showLineText(from, to) {
+          return App.api('palms.lineText', { from: from, to: to }).then(function (text) {
+            App.modal.showText('LINE 週報', text);
+          }).catch(App.handleError);
+        }
+
+        function presetSummary(months) {
+          var to = App.todayIso();
+          $('#pm-from').value = App.addMonths(to, -months);
+          $('#pm-to').value = to;
+          runSummary();
+        }
+
+        function runSummary() {
+          var from = $('#pm-from').value;
+          var to = $('#pm-to').value;
+          if (!from || !to) return;
+          var box = $('#pm-summary');
+          App.skeleton(box, 5);
+          App.api('palms.summary', { from: from, to: to }).then(function (s) {
+            if (!s.members.length) {
+              App.emptyState(box, '這段期間沒有 PALMS 資料');
+              return;
+            }
+            box.innerHTML = '<p class="muted small">共 ' + s.periods.length + ' 期・' + s.members.length + ' 位' +
+              (s.absenceAlert ? '・缺席達 ' + s.absenceAlert + ' 次標示提醒' : '') + '</p>' +
+              (s.overlaps.length ? '<p class="notice warn">有期間互相重疊（例如同時匯入週報與月報），加總會重複計算：' + esc(s.overlaps.map(function (o) {
+                return o[0].from + '～' + o[0].to + ' 與 ' + o[1].from + '～' + o[1].to;
+              }).join('；')) + '</p>' : '') +
+              palmsTable(s.members, s) +
+              '<div class="toolbar" style="margin-top:12px"><button type="button" class="btn" id="pm-line">產生 LINE 報告</button></div>';
+            box.querySelector('#pm-line').addEventListener('click', function () { showLineText(from, to); });
+          }).catch(function (err) {
+            App.errorState(box, err);
+            App.handleError(err);
+          });
+        }
+
+        function renderPreview() {
+          var p = preview.parsed;
+          var period = p.period || { from: '', to: '' };
+          $('#pm-status').textContent = '「' + preview.fileName + '」';
+          var box = $('#pm-preview');
+          box.innerHTML =
+            '<div class="form-grid">' + App.field('期間起', '<input type="date" id="pv-from" value="' + esc(period.from) + '">', true) +
+            App.field('期間迄', '<input type="date" id="pv-to" value="' + esc(period.to) + '">', true) + '</div>' +
+            (p.period ? '' : '<p class="notice">報表裡找不到期間，請手動填寫起訖日期。</p>') +
+            '<div class="kv"><span>會員 <b>' + p.members.length + '</b> 位</span><span>辨識到的欄位：' + esc(p.columns.join('、')) + '</span>' +
+            (p.missing.length ? '<span>沒有的欄位（記為 0）：' + esc(p.missing.join('、')) + '</span>' : '') +
+            (p.unknown.length ? '<span>未使用的欄位：' + esc(p.unknown.join('、')) + '</span>' : '') +
+            (p.skipped.length ? '<span>略過：' + esc(p.skipped.join('、')) + '</span>' : '') + '</div>' +
+            (p.newNames.length ? '<div class="notice">以下 ' + p.newNames.length + ' 位不在會員名冊：' + esc(p.newNames.join('、')) +
+              '<br><label class="check"><input type="checkbox" id="pv-sync" checked> 儲存時自動加入會員名冊</label></div>' : '') +
+            palmsTable(p.members, null) +
+            '<div class="toolbar"><button type="button" class="btn btn-primary" id="pv-save">儲存匯入</button>' +
+            '<button type="button" class="btn" id="pv-cancel">取消</button></div>';
+          box.hidden = false;
+          box.querySelector('#pv-save').addEventListener('click', function () { savePreview(this); });
+          box.querySelector('#pv-cancel').addEventListener('click', function () {
+            preview = null;
+            box.hidden = true;
+            $('#pm-status').textContent = '';
+          });
+        }
+
+        function savePreview(btn) {
+          var from = $('#pv-from').value;
+          var to = $('#pv-to').value;
+          if (!from || !to) {
+            App.toast('請填寫期間起訖日期', 'error');
+            return;
+          }
+          App.withButton(btn, function () {
+            return App.api('palms.save', {
+              rows: preview.rows, fileName: preview.fileName, from: from, to: to,
+              syncMembers: $('#pv-sync') ? $('#pv-sync').checked : true
+            }).then(function (res) {
+              App.toast('已匯入 ' + res.from + ' ～ ' + res.to + '，共 ' + res.count + ' 位' + (res.replaced ? '（已覆蓋舊資料）' : '') +
+                (res.addedMembers.length ? '，新增會員 ' + res.addedMembers.length + ' 位' : ''));
+              preview = null;
+              $('#pm-preview').hidden = true;
+              $('#pm-status').textContent = '';
+              if (res.addedMembers.length) App.refreshSession().catch(App.handleError);
+              loadPeriods();
+              runSummary();
+            });
+          }).catch(App.handleError);
+        }
+
+        if (canManage) {
+          $('#pm-file').addEventListener('change', function (e) {
+            var file = e.target.files[0];
+            if (!file) return;
+            $('#pm-status').textContent = '讀取「' + file.name + '」…';
+            $('#pm-preview').hidden = true;
+            Promise.all([App.loadScript(XLSX_URL), readFile(file)]).then(function (res) {
+              var rows = workbookRows(res[1], file.name);
+              return App.api('palms.preview', { rows: rows, fileName: file.name }).then(function (parsed) {
+                preview = { rows: rows, fileName: file.name, parsed: parsed };
+                renderPreview();
+              });
+            }).catch(function (err) {
+              $('#pm-status').textContent = '';
+              App.handleError(err);
+            }).then(function () {
+              e.target.value = '';
+            });
+          });
+        }
+
+        $('#pm-periods').addEventListener('click', function (e) {
+          var btn = e.target.closest('[data-act]');
+          if (!btn) return;
+          var tr = btn.closest('tr');
+          var from = tr.getAttribute('data-from');
+          var to = tr.getAttribute('data-to');
+          if (btn.getAttribute('data-act') === 'line') {
+            App.withButton(btn, function () { return showLineText(from, to); });
+            return;
+          }
+          App.modal.confirm('刪除 PALMS 資料', '確定刪除 ' + from + ' ～ ' + to + ' 這一期的資料？', '刪除').then(function (ok) {
+            if (!ok) return;
+            return App.api('palms.delete', { from: from, to: to }).then(function (res) {
+              App.toast('已刪除 ' + res.count + ' 筆');
+              loadPeriods();
+              runSummary();
+            });
+          }).catch(App.handleError);
+        });
+        $('#pm-3m').addEventListener('click', function () { presetSummary(3); });
+        $('#pm-6m').addEventListener('click', function () { presetSummary(6); });
+        $('#pm-run').addEventListener('click', runSummary);
+
+        loadPeriods();
+        presetSummary(6);
+      }
+    });
+  })();
+</script>

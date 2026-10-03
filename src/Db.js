@@ -1,14 +1,21 @@
 /**
  * 試算表存取：每張資料表第一列是標題，其餘每列一筆資料。
- * Db.read 回傳的 table 會帶著工作表與欄位位置，後續的 append / update / deleteRows 都用它。
+ *
+ * - Db.read 回傳的 table 會帶著工作表與欄位位置，後續的 append / update / softDelete 都用它。
+ * - 同一次請求內，同一張表只讀一次（快取）；寫入會同步更新快取。進入 withLock_ 時清空快取，確保鎖內讀到最新資料。
+ * - 有「已刪除」欄的表一律軟刪除，Db.read 預設不回傳已刪除的列。
  */
 
 function ss_() {
-  const active = SpreadsheetApp.getActiveSpreadsheet();
-  if (active) return active;
-  const id = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
-  if (!id) throw new Error('找不到資料試算表：請在試算表選單執行「BNI 分會工具 → 初始化資料表」');
-  return SpreadsheetApp.openById(id);
+  if (Db.ss_) return Db.ss_;
+  let ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) {
+    const id = PropertiesService.getScriptProperties().getProperty('SPREADSHEET_ID');
+    if (!id) throw new Error('找不到資料試算表：請在試算表選單執行「BNI 分會工具 → 初始化資料表」');
+    ss = SpreadsheetApp.openById(id);
+  }
+  Db.ss_ = ss;
+  return ss;
 }
 
 function tz_() {
@@ -38,7 +45,20 @@ function toCell_(v, type, plainText) {
   return toSheetText(v);
 }
 
+function isAlive_(row) {
+  return !row.deleted;
+}
+
 const Db = {
+  cache_: {},
+  ss_: null,
+
+  /** 每次請求開始時呼叫（Apps Script 每次執行本來就是新的環境，這是給測試與本機預覽用） */
+  reset: function () {
+    Db.cache_ = {};
+    Db.ss_ = null;
+  },
+
   sheet: function (def) {
     const ss = ss_();
     let sh = ss.getSheetByName(def.name);
@@ -59,7 +79,11 @@ const Db = {
     sh.setFrozenRows(1);
     (def.widths || []).forEach(function (w, i) { sh.setColumnWidth(i + 1, w); });
     const seed = def.seed ? def.seed() : [];
-    if (seed.length) sh.getRange(2, 1, seed.length, titles.length).setValues(seed);
+    if (seed.length) {
+      sh.getRange(2, 1, seed.length, titles.length).setValues(seed.map(function (row) {
+        return row.map(function (v, i) { return toCell_(v, def.columns[i].type, def.plainText); });
+      }));
+    }
   },
 
   /** 依標題找欄位；被刪掉的欄位補回最右邊 */
@@ -90,11 +114,11 @@ const Db = {
     return { col: col, width: width };
   },
 
-  read: function (def) {
+  load_: function (def) {
     const sh = Db.sheet(def);
     const layout = Db.layout_(sh, def);
     const lastRow = sh.getLastRow();
-    const rows = [];
+    const all = [];
     if (lastRow >= 2) {
       const tz = tz_();
       sh.getRange(2, 1, lastRow - 1, layout.width).getValues().forEach(function (values, i) {
@@ -103,10 +127,26 @@ const Db = {
         def.columns.forEach(function (c) {
           obj[c.key] = fromCell_(values[layout.col[c.key]], c.type, tz);
         });
-        rows.push(obj);
+        all.push(obj);
       });
     }
-    return { def: def, sheet: sh, layout: layout, rows: rows };
+    return { def: def, sheet: sh, layout: layout, all: all };
+  },
+
+  /** opts.includeDeleted：連已刪除的列一起回傳 */
+  read: function (def, opts) {
+    let base = Db.cache_[def.name];
+    if (!base) {
+      base = Db.load_(def);
+      Db.cache_[def.name] = base;
+    }
+    return {
+      def: def,
+      sheet: base.sheet,
+      layout: base.layout,
+      base: base,
+      rows: opts && opts.includeDeleted ? base.all.slice() : base.all.filter(isAlive_)
+    };
   },
 
   append: function (table, objs) {
@@ -127,43 +167,55 @@ const Db = {
     const extraRows = start + values.length - 1 - sh.getMaxRows();
     if (extraRows > 0) sh.insertRowsAfter(sh.getMaxRows(), extraRows);
     sh.getRange(start, 1, values.length, layout.width).setValues(values);
+    objs.forEach(function (o, i) {
+      const obj = { _row: start + i };
+      def.columns.forEach(function (c) {
+        const v = o[c.key];
+        obj[c.key] = c.type === 'number' ? toNumber(v) : (v === null || v === undefined ? '' : String(v));
+      });
+      table.base.all.push(obj);
+      if (isAlive_(obj)) table.rows.push(obj);
+    });
   },
 
   /** 只寫有變動的欄位，不會動到使用者自己加的欄位 */
   update: function (table, rowNum, patch) {
+    const cached = table.base.all.filter(function (r) { return r._row === rowNum; })[0];
     table.def.columns.forEach(function (c) {
       if (!Object.prototype.hasOwnProperty.call(patch, c.key)) return;
       table.sheet.getRange(rowNum, table.layout.col[c.key] + 1)
         .setValue(toCell_(patch[c.key], c.type, table.def.plainText));
+      if (cached) cached[c.key] = c.type === 'number' ? toNumber(patch[c.key]) : String(patch[c.key] == null ? '' : patch[c.key]);
     });
   },
 
-  /** 從下往上刪，連續的列一次刪掉 */
-  deleteRows: function (table, rowNums) {
-    const sorted = rowNums.slice().sort(function (a, b) { return b - a; });
-    let i = 0;
-    while (i < sorted.length) {
-      let start = sorted[i];
-      let count = 1;
-      while (i + count < sorted.length && sorted[i + count] === start - 1) {
-        start -= 1;
-        count += 1;
-      }
-      table.sheet.deleteRows(start, count);
-      i += count;
-    }
+  /** 軟刪除：標記「已刪除」，資料留在試算表 */
+  softDelete: function (table, rowNum) {
+    Db.update(table, rowNum, { deleted: '是' });
+    table.rows = table.rows.filter(function (r) { return r._row !== rowNum; });
   }
 };
 
-/** 寫入前取得鎖，避免多台裝置同時簽到時互相覆蓋 */
+/**
+ * 寫入前取得鎖，避免多台裝置同時操作時互相覆蓋；鎖內一律重新讀取資料。
+ * 已經在鎖內時直接執行（可巢狀呼叫）。
+ */
 function withLock_(fn) {
+  if (withLock_.depth > 0) return fn();
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) throw new Error('系統忙碌中，請稍後再試一次');
+  withLock_.depth = 1;
   try {
+    Db.cache_ = {};
     const result = fn();
     SpreadsheetApp.flush();
     return result;
   } finally {
+    withLock_.depth = 0;
     lock.releaseLock();
   }
+}
+
+function newId_(prefix) {
+  return prefix + Utilities.getUuid().replace(/-/g, '').slice(0, 10).toUpperCase();
 }

@@ -1,35 +1,47 @@
 <script>
-  /* 共用工具：API 呼叫、跳脫、提示、對話框（管理系統與來賓報名頁共用） */
+  /* 共用工具：API 呼叫、登入憑證、跳脫、提示、對話框、表單與載入狀態（管理系統與報名頁共用） */
   (function () {
     'use strict';
     var App = window.App = window.App || {};
+    App.state = App.state || {};
 
-    // 管理密碼：記在記憶體，並放 sessionStorage 讓重新整理後不用再登入（關掉分頁就失效）
-    var PIN_KEY = 'bni_admin_pin';
-    var pinMemory = '';
-    function storage(action, value) {
+    // ---------- 登入憑證：放 localStorage，重新整理或關掉分頁都不用重登（14 天後過期） ----------
+    var TOKEN_KEY = 'bni_token';
+    var tokenMemory = '';
+    function store(key, value) {
       try {
-        if (action === 'get') return window.sessionStorage.getItem(PIN_KEY) || '';
-        if (value) window.sessionStorage.setItem(PIN_KEY, value);
-        else window.sessionStorage.removeItem(PIN_KEY);
+        if (value === undefined) return window.localStorage.getItem(key) || '';
+        if (value) window.localStorage.setItem(key, value);
+        else window.localStorage.removeItem(key);
       } catch (e) { /* 無痕模式等環境可能無法使用 */ }
       return '';
     }
-    App.getPin = function () { return pinMemory || storage('get'); };
-    App.setPin = function (pin) { pinMemory = pin || ''; storage('set', pin); };
+    App.store = store;
+    App.getToken = function () { return tokenMemory || store(TOKEN_KEY); };
+    App.setToken = function (token) { tokenMemory = token || ''; store(TOKEN_KEY, token || ''); };
 
     App.api = function (action, data) {
       return new Promise(function (resolve, reject) {
         google.script.run
           .withSuccessHandler(function (res) {
-            if (res && res.ok) resolve(res.data);
-            else reject(new Error((res && res.error) || '伺服器沒有回應，請稍後再試'));
+            if (res && res.ok) return resolve(res.data);
+            var err = new Error((res && res.error) || '伺服器沒有回應，請稍後再試');
+            err.code = res && res.code;
+            reject(err);
           })
           .withFailureHandler(function (err) {
             reject(new Error(err && err.message ? err.message : '連線失敗，請檢查網路後再試'));
           })
-          .apiCall({ action: action, data: data || {}, pin: App.getPin() });
+          .apiCall({ action: action, data: data || {}, token: App.getToken() });
       });
+    };
+
+    /** 登入後由外框設定：{ account, perms, settings, ... } */
+    App.session = null;
+    App.can = function (code) {
+      var perms = (App.session && App.session.perms) || [];
+      var codes = Array.isArray(code) ? code : [code];
+      return codes.some(function (c) { return perms.indexOf(c) >= 0; });
     };
 
     App.$ = function (sel, root) { return (root || document).querySelector(sel); };
@@ -51,6 +63,73 @@
       toastTimer = setTimeout(function () { el.hidden = true; }, type === 'error' ? 6000 : 2500);
     };
 
+    /** 錯誤處理：登入過期就回登入畫面，其餘顯示提示 */
+    App.handleError = function (err) {
+      if (err && err.code === 'AUTH' && App.onAuthError) {
+        App.onAuthError(err.message);
+        return;
+      }
+      App.toast((err && err.message) || String(err), 'error');
+    };
+
+    /** 寫入用：按鈕鎖定直到完成，防止連點重複送出 */
+    App.withButton = function (btn, fn) {
+      if (btn && (btn.disabled || btn.classList.contains('is-busy'))) return Promise.resolve();
+      if (btn) {
+        btn.disabled = true;
+        btn.classList.add('is-busy');
+      }
+      return Promise.resolve().then(fn).finally(function () {
+        if (btn) {
+          btn.disabled = false;
+          btn.classList.remove('is-busy');
+        }
+      });
+    };
+
+    // ---------- 載入狀態 ----------
+    App.skeleton = function (el, lines) {
+      var html = '<div class="skeleton">';
+      for (var i = 0; i < (lines || 4); i++) html += '<i></i>';
+      el.innerHTML = html + '</div>';
+    };
+    App.emptyState = function (el, msg) {
+      el.innerHTML = '<p class="empty">' + App.esc(msg) + '</p>';
+    };
+    App.errorState = function (el, err) {
+      el.innerHTML = '<p class="empty">' + App.esc((err && err.message) || '載入失敗') + '</p>';
+    };
+
+    // ---------- 表單 ----------
+    App.field = function (label, control, required, hint, cls) {
+      return '<label class="field' + (cls ? ' ' + cls : '') + '"><span>' + App.esc(label) + (required ? ' <b class="req">*</b>' : '') +
+        '</span>' + control + (hint ? '<span class="hint">' + App.esc(hint) + '</span>' : '') + '</label>';
+    };
+    App.formValues = function (form) {
+      var out = {};
+      App.$$('[name]', form).forEach(function (el) {
+        if (el.type === 'checkbox') {
+          if (el.hasAttribute('data-multi')) {
+            out[el.name] = out[el.name] || [];
+            if (el.checked) out[el.name].push(el.value);
+          } else {
+            out[el.name] = el.checked;
+          }
+        } else if (el.type === 'radio') {
+          if (el.checked) out[el.name] = el.value;
+        } else {
+          out[el.name] = String(el.value).trim();
+        }
+      });
+      return out;
+    };
+    App.fmt = function (n) {
+      return (Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+    };
+    App.money = function (n) {
+      return 'NT$' + App.fmt(n);
+    };
+
     // ---------- 日期 ----------
     App.WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
     function pad(n) { return (n < 10 ? '0' : '') + n; }
@@ -58,6 +137,10 @@
     App.dateLabel = function (iso) {
       if (!iso) return '';
       return iso + '（' + App.WEEKDAYS[new Date(iso + 'T00:00:00Z').getUTCDay()] + '）';
+    };
+    App.shortDate = function (iso) {
+      if (!iso) return '';
+      return Number(iso.slice(5, 7)) + '/' + Number(iso.slice(8, 10)) + '（' + App.WEEKDAYS[new Date(iso + 'T00:00:00Z').getUTCDay()] + '）';
     };
     App.todayIso = function () {
       var d = new Date();
@@ -68,9 +151,71 @@
       d.setUTCMonth(d.getUTCMonth() + months);
       return isoFromUtc(d);
     };
+    App.addDays = function (iso, days) {
+      var d = new Date(iso + 'T00:00:00Z');
+      d.setUTCDate(d.getUTCDate() + days);
+      return isoFromUtc(d);
+    };
     App.nowStamp = function () {
       var d = new Date();
       return App.todayIso() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    };
+    App.greeting = function (hour) {
+      return hour < 5 ? '晚安' : hour < 11 ? '早安' : hour < 18 ? '午安' : '晚安';
+    };
+
+    // ---------- 活動 ----------
+    App.eventLabel = function (e) {
+      return App.shortDate(e.date) + ' ' + e.name + (e.cancelled ? '（停會）' : '');
+    };
+
+    /**
+     * 活動選單（簽到、活動來賓、來賓速覽、幸運轉盤共用），會記住上次選的活動。
+     * onChange(event) 在載入完與切換時呼叫。
+     */
+    App.eventPicker = function (el, onChange) {
+      el.innerHTML = '<div class="event-picker"><select aria-label="選擇活動" disabled><option>載入中…</option></select></div>';
+      var select = el.querySelector('select');
+      var events = [];
+      var emit = function () {
+        var e = events.filter(function (x) { return x.id === select.value; })[0];
+        if (!e) return;
+        App.state.eventId = e.id;
+        onChange(e);
+      };
+      return App.api('events.options', {}).then(function (res) {
+        events = res.events;
+        if (!events.length) {
+          select.innerHTML = '<option>近期沒有活動</option>';
+          return null;
+        }
+        var chosen = events.some(function (e) { return e.id === App.state.eventId; }) ? App.state.eventId : res.defaultId;
+        select.innerHTML = events.map(function (e) {
+          return '<option value="' + App.esc(e.id) + '"' + (e.id === chosen ? ' selected' : '') + '>' +
+            App.esc(App.eventLabel(e) + (e.date === res.today ? '・今天' : '')) + '</option>';
+        }).join('');
+        select.disabled = false;
+        select.addEventListener('change', emit);
+        emit();
+        return events;
+      }).catch(function (err) {
+        select.innerHTML = '<option>' + App.esc(err.message) + '</option>';
+        App.handleError(err);
+      });
+    };
+
+    // ---------- 圖示 ----------
+    var ICONS = {
+      home: '<path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h5v-6h4v6h5V10"/>',
+      calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/><path d="M7 14h2M11 14h2M15 14h2M7 17h2M11 17h2"/>',
+      guests: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/>',
+      check: '<path d="M5 12.5 10 17 19 7"/>',
+      menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+      close: '<path d="M6 6l12 12M18 6 6 18"/>'
+    };
+    App.icon = function (name) {
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        (ICONS[name] || '') + '</svg>';
     };
 
     // ---------- 外部元件與剪貼簿 ----------
@@ -89,6 +234,13 @@
         });
       }
       return scripts[src];
+    };
+    App.QR_URL = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+    App.drawQr = function (el, text) {
+      return App.loadScript(App.QR_URL).then(function () {
+        el.innerHTML = '';
+        new window.QRCode(el, { text: text, width: 264, height: 264, correctLevel: window.QRCode.CorrectLevel.M });
+      }).catch(function () { /* 沒有 QR code 不影響使用 */ });
     };
 
     function legacyCopy(text) {

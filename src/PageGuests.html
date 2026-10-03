@@ -1,0 +1,226 @@
+<script>
+  /* 活動來賓：每場活動的報名連結（含會員個人邀請連結與 QR code）、報名名單、代為登記、編輯與刪除 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    function inviterSelect(current) {
+      var names = (App.session.members || []).map(function (m) { return m.name; });
+      if (current && names.indexOf(current) < 0) names.unshift(current);
+      return '<select name="inviter"><option value="">（無）</option>' + names.map(function (n) {
+        return '<option' + (n === current ? ' selected' : '') + '>' + esc(n) + '</option>';
+      }).join('') + '</select>';
+    }
+
+    function memberSelect() {
+      return '<select name="memberId"><option value="">請選擇會員</option>' + (App.session.members || []).map(function (m) {
+        return '<option value="' + esc(m.id) + '">' + esc(m.name + (m.category ? '（' + m.category + '）' : '')) + '</option>';
+      }).join('') + '</select>';
+    }
+
+    /**
+     * 報名表單。opts.allowMember：非例會活動新增時可選「會員」；opts.withPaid：顯示已繳費。
+     * 會員報名只需要選人，其餘欄位由會員名冊帶入。
+     */
+    App.registrationForm = function (g, opts) {
+      opts = opts || {};
+      var isMember = g.role === '會員';
+      var form = document.createElement('form');
+      form.className = 'form-grid';
+      form.innerHTML =
+        (opts.allowMember ? App.field('身分', '<div class="segmented"><label><input type="radio" name="role" value="來賓" checked> 來賓</label>' +
+          '<label><input type="radio" name="role" value="會員"> 分會會員</label></div>', false, '', 'full') +
+          '<div class="full" data-member-only hidden>' + App.field('會員', memberSelect(), true) + '</div>' : '') +
+        '<div class="full form-grid" data-guest-only' + (isMember ? ' hidden' : '') + '>' +
+        App.field('姓名', '<input type="text" name="name" maxlength="40" value="' + esc(g.name) + '">', true) +
+        App.field('公司', '<input type="text" name="company" maxlength="80" value="' + esc(g.company) + '">') +
+        App.field('專業別', '<input type="text" name="category" maxlength="60" value="' + esc(g.category) + '">') +
+        App.field('手機', '<input type="tel" name="phone" maxlength="30" value="' + esc(g.phone) + '">') +
+        App.field('Email', '<input type="email" name="email" maxlength="100" value="' + esc(g.email) + '">') +
+        App.field('邀請人', inviterSelect(g.inviter)) + '</div>' +
+        App.field('備註', '<input type="text" name="note" maxlength="200" value="' + esc(g.note) + '">', false, '', 'full') +
+        (opts.withPaid ? '<label class="check full"><input type="checkbox" name="paid"> 已繳費</label>' : '') +
+        '<button type="submit" hidden></button>';
+      if (opts.allowMember) {
+        App.$$('input[name=role]', form).forEach(function (r) {
+          r.addEventListener('change', function () {
+            var member = form.querySelector('input[name=role]:checked').value === '會員';
+            form.querySelector('[data-member-only]').hidden = !member;
+            form.querySelector('[data-guest-only]').hidden = member;
+          });
+        });
+      }
+      return form;
+    };
+
+    /** 表單送出前檢查；回傳要送到伺服器的資料或 null */
+    App.registrationData = function (form) {
+      var v = App.formValues(form);
+      if (v.role === '會員') {
+        if (!v.memberId) { App.toast('請選擇會員', 'error'); return null; }
+        return { role: '會員', memberId: v.memberId, note: v.note, paid: v.paid };
+      }
+      if (!v.name) { App.toast('請填寫姓名', 'error'); return null; }
+      delete v.memberId;
+      v.role = '來賓';
+      return v;
+    };
+
+    function registerLink(eventId, inviter) {
+      var url = App.session.registerUrl;
+      if (!url) return '';
+      return url + '&event=' + encodeURIComponent(eventId) + (inviter ? '&inviter=' + encodeURIComponent(inviter) : '');
+    }
+
+    App.registerPage('guests', {
+      title: '活動來賓',
+      perm: 'guests.registration.view',
+      render: function (el) {
+        var canManage = App.can('guests.registration.manage');
+        el.innerHTML = '<div class="page-head"><div><h1>活動來賓</h1><p>報名連結、報名名單與代為登記</p></div></div>' +
+          '<div class="stack"><div id="g-picker"></div>' +
+          '<section class="card"><div class="card-head"><h2>報名連結</h2></div><div id="g-link"></div></section>' +
+          '<div class="section-head"><h2>報名名單 <span class="muted" id="g-count"></span></h2>' +
+          (canManage ? '<button type="button" class="btn btn-primary" id="g-add">＋ 代為登記</button>' : '') + '</div>' +
+          '<div id="g-table"></div></div>';
+        var event = null;
+        var list = [];
+
+        function renderLink() {
+          var box = el.querySelector('#g-link');
+          if (!event.openRegistration || event.cancelled) {
+            box.innerHTML = '<p class="muted" style="margin:0">' + (event.cancelled ? '這場活動已停會。' : '這場活動沒有開放公開報名，可以用「代為登記」加入名單。') + '</p>';
+            return;
+          }
+          var url = registerLink(event.id, '');
+          if (!url) {
+            box.innerHTML = '<p class="muted" style="margin:0">部署成網頁應用程式後，這裡會顯示報名網址。</p>';
+            return;
+          }
+          box.innerHTML = '<div class="link-box"><select id="g-inviter"><option value="">分會通用連結</option>' +
+            (App.session.members || []).map(function (m) { return '<option>' + esc(m.name) + '</option>'; }).join('') +
+            '</select><input type="text" id="g-url" readonly value="' + esc(url) + '">' +
+            '<button type="button" class="btn" id="g-copy">複製連結</button>' +
+            '<a class="btn" id="g-open" target="_blank" rel="noopener" href="' + esc(url) + '">開啟</a></div>' +
+            '<p class="muted small">選會員可產生個人邀請連結，來賓報名時會自動帶入邀請人。</p><div class="qr" id="g-qr"></div>';
+          App.drawQr(box.querySelector('#g-qr'), url);
+          box.querySelector('#g-inviter').addEventListener('change', function () {
+            var link = registerLink(event.id, this.value);
+            box.querySelector('#g-url').value = link;
+            box.querySelector('#g-open').href = link;
+            App.drawQr(box.querySelector('#g-qr'), link);
+          });
+          box.querySelector('#g-copy').addEventListener('click', function () {
+            App.copyText(box.querySelector('#g-url').value).then(function (ok) {
+              App.toast(ok ? '已複製報名連結' : '請手動複製連結', ok ? '' : 'error');
+            });
+          });
+        }
+
+        function renderTable() {
+          var box = el.querySelector('#g-table');
+          el.querySelector('#g-count').textContent = list.length ? '（' + list.length + ' 位）' : '';
+          if (!list.length) {
+            App.emptyState(box, App.shortDate(event.date) + ' ' + event.name + ' 還沒有人報名');
+            return;
+          }
+          var showRole = !event.isMeeting;
+          box.innerHTML = '<div class="table-wrap"><table class="data"><thead><tr><th>姓名</th>' + (showRole ? '<th>身分</th>' : '') +
+            '<th>公司</th><th>專業別</th><th>手機</th><th>Email</th><th>邀請人</th><th>來源</th><th>簽到</th><th>繳費</th><th>備註</th>' +
+            (canManage ? '<th></th>' : '') + '</tr></thead><tbody>' + list.map(function (g) {
+              return '<tr data-id="' + esc(g.id) + '"><td><b>' + esc(g.name) + '</b></td>' + (showRole ? '<td>' + esc(g.role) + '</td>' : '') +
+                '<td>' + esc(g.company) + '</td><td>' + esc(g.category) + '</td><td>' + esc(g.phone) + '</td><td>' + esc(g.email) +
+                '</td><td>' + esc(g.inviter) + '</td><td>' + esc(g.source) + '</td><td>' + (g.checkedInAt ? esc(g.checkedInAt.slice(11, 16)) : '—') +
+                '</td><td>' + (g.paid ? '✓ ' + esc(g.paidAmount ? App.fmt(g.paidAmount) : '') : '—') + '</td><td>' + esc(g.note) + '</td>' +
+                (canManage ? '<td><button type="button" class="btn btn-sm" data-act="edit">編輯</button> ' +
+                  '<button type="button" class="btn btn-sm btn-danger" data-act="delete">刪除</button></td>' : '') + '</tr>';
+            }).join('') + '</tbody></table></div>';
+        }
+
+        function load() {
+          App.skeleton(el.querySelector('#g-table'), 5);
+          var id = event.id;
+          return App.api('registrations.list', { eventId: id }).then(function (res) {
+            if (!event || event.id !== id) return;
+            list = res;
+            renderTable();
+          }).catch(function (err) {
+            App.errorState(el.querySelector('#g-table'), err);
+            App.handleError(err);
+          });
+        }
+
+        App.eventPicker(el.querySelector('#g-picker'), function (e) {
+          event = e;
+          renderLink();
+          load();
+        });
+
+        if (canManage) {
+          el.querySelector('#g-add').addEventListener('click', function () {
+            if (!event) return;
+            var form = App.registrationForm({}, { allowMember: !event.isMeeting });
+            var data = null;
+            App.modal.open({
+              title: '代為登記：' + App.eventLabel(event),
+              body: form,
+              actions: [
+                { label: '取消', value: null },
+                { label: '新增', value: 'ok', cls: 'btn-primary', primary: true, validate: function () { data = App.registrationData(form); return !!data; } }
+              ]
+            }).then(function (v) {
+              if (v !== 'ok') return;
+              data.eventId = event.id;
+              return App.api('registrations.add', data).then(function (res) {
+                App.toast(res.duplicate ? res.registration.name + ' 已經報名過了' : '已新增 ' + res.registration.name);
+                load();
+              });
+            }).catch(App.handleError);
+          });
+        }
+
+        el.querySelector('#g-table').addEventListener('click', function (e) {
+          var btn = e.target.closest('[data-act]');
+          if (!btn) return;
+          var id = btn.closest('tr').getAttribute('data-id');
+          var g = list.filter(function (x) { return x.id === id; })[0];
+          if (!g) return;
+          if (btn.getAttribute('data-act') === 'delete') {
+            App.modal.confirm('刪除報名', '確定刪除「' + g.name + '」的報名資料？' + (g.paid ? '已繳的費用會一併作廢。' : ''), '刪除').then(function (ok) {
+              if (!ok) return;
+              return App.withButton(btn, function () {
+                return App.api('registrations.delete', { id: id }).then(function () {
+                  App.toast('已刪除');
+                  load();
+                });
+              });
+            }).catch(App.handleError);
+            return;
+          }
+          var form = App.registrationForm(g, {});
+          App.modal.open({
+            title: '編輯報名',
+            body: form,
+            actions: [
+              { label: '取消', value: null },
+              {
+                label: '儲存', value: 'ok', cls: 'btn-primary', primary: true, validate: function () {
+                  if (g.role === '會員' || App.formValues(form).name) return true;
+                  App.toast('請填寫姓名', 'error');
+                  return false;
+                }
+              }
+            ]
+          }).then(function (v) {
+            if (v !== 'ok') return;
+            return App.api('registrations.update', { id: id, patch: App.formValues(form) }).then(function () {
+              App.toast('已儲存');
+              load();
+            });
+          }).catch(App.handleError);
+        });
+      }
+    });
+  })();
+</script>

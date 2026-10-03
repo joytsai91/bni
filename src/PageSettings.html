@@ -1,0 +1,297 @@
+<script>
+  /* 系統設定：分會設定、每週提醒、帳號管理（系統管理員） */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    var GROUPS = [
+      ['基本', ['systemName', 'chapterName']],
+      ['例會', ['meetingWeekday', 'meetingTime', 'meetingEndTime', 'meetingPlace', 'lateAfter']],
+      ['費用與財務', ['guestFee', 'monthlyDues', 'openingBalance']],
+      ['提醒與報表', ['expiryNoticeDays', 'absenceAlert']],
+      ['列印', ['badgeWidth', 'badgeHeight']],
+      ['寄信', ['mailSenderName', 'replyTo']]
+    ];
+    var TIME_KEYS = ['meetingTime', 'meetingEndTime', 'lateAfter'];
+    var NUMBER_KEYS = ['guestFee', 'monthlyDues', 'openingBalance', 'expiryNoticeDays', 'badgeWidth', 'badgeHeight', 'absenceAlert'];
+    var WEEK = ['一', '二', '三', '四', '五', '六', '日'];
+
+    function weekdayValue(v) {
+      var s = String(v || '');
+      for (var i = 0; i < WEEK.length; i++) if (s.indexOf(WEEK[i]) >= 0) return WEEK[i];
+      var n = parseInt(s, 10);
+      return n >= 0 && n <= 7 ? App.WEEKDAYS[n % 7] : '四';
+    }
+
+    function timeValue(v) {
+      var m = /(\d{1,2})\s*[:：]\s*(\d{2})/.exec(String(v || ''));
+      return m ? (m[1].length === 1 ? '0' : '') + m[1] + ':' + m[2] : '';
+    }
+
+    function weekSelect(name, current) {
+      return '<select name="' + name + '">' + WEEK.map(function (d) {
+        return '<option' + (d === current ? ' selected' : '') + '>' + d + '</option>';
+      }).join('') + '</select>';
+    }
+
+    function settingControl(it) {
+      if (it.key === 'meetingWeekday') return weekSelect('meetingWeekday', weekdayValue(it.value));
+      if (TIME_KEYS.indexOf(it.key) >= 0) return '<input type="time" name="' + it.key + '" value="' + esc(timeValue(it.value)) + '">';
+      if (NUMBER_KEYS.indexOf(it.key) >= 0) return '<input type="number" step="any" name="' + it.key + '" value="' + esc(it.value) + '">';
+      if (it.key === 'replyTo') return '<input type="email" maxlength="100" name="replyTo" value="' + esc(it.value) + '">';
+      return '<input type="text" maxlength="80" name="' + it.key + '" value="' + esc(it.value) + '">';
+    }
+
+    // ---------- 每週提醒 ----------
+
+    function reminderForm(r) {
+      var form = document.createElement('form');
+      form.className = 'form-grid';
+      form.innerHTML =
+        App.field('星期', weekSelect('weekday', r.weekdayLabel || '三'), true) +
+        App.field('時間', '<input type="time" name="time" value="' + esc(r.time || '12:00') + '">', true) +
+        App.field('內容', '<textarea name="content" rows="3" maxlength="300">' + esc(r.content || '') + '</textarea>', true,
+          '可以用 {{例會日期}}、{{例會時間}}、{{例會地點}}、{{分會名稱}}，會自動換成下一場例會的資料', 'full') +
+        '<div class="checks full"><label class="check"><input type="checkbox" name="enabled"' + (r.enabled === false ? '' : ' checked') + '> 啟用</label>' +
+        '<label class="check"><input type="checkbox" name="pushLine"' + (r.pushLine ? ' checked' : '') + '> 時間到時推播到 LINE 群組</label></div>' +
+        '<button type="submit" hidden></button>';
+      return form;
+    }
+
+    // ---------- 帳號 ----------
+
+    function accountForm(a, roles, isNew) {
+      var form = document.createElement('form');
+      form.className = 'form-grid';
+      var members = App.session.members || [];
+      form.innerHTML =
+        (isNew ? App.field('登入帳號', '<input type="text" name="username" maxlength="40" autocapitalize="none" spellcheck="false">', true, '英文或數字，至少 3 碼') : '') +
+        App.field('顯示名稱', '<input type="text" name="displayName" maxlength="30" value="' + esc(a.displayName) + '">', true) +
+        App.field('職稱', '<input type="text" name="title" maxlength="20" value="' + esc(a.title) + '" placeholder="例如：秘書財務">') +
+        App.field('對應會員', '<select name="memberId"><option value="">（不對應）</option>' + members.map(function (m) {
+          return '<option value="' + esc(m.id) + '"' + (m.id === a.memberId ? ' selected' : '') + '>' + esc(m.name) + '</option>';
+        }).join('') + '</select>', false, '對應後，指派給這位會員的追蹤會出現在他的首頁') +
+        App.field('Email', '<input type="email" name="email" maxlength="100" value="' + esc(a.email) + '">') +
+        (isNew ? App.field('密碼', '<input type="password" name="password" autocomplete="new-password">', true, '至少 8 碼，請本人登入後自行修改') :
+          App.field('狀態', '<select name="status"><option' + (a.status !== '停用' ? ' selected' : '') + '>啟用</option><option' + (a.status === '停用' ? ' selected' : '') + '>停用</option></select>')) +
+        '<div class="full field"><span>角色</span><div class="checks">' + roles.map(function (r) {
+          return '<label class="check" title="' + esc(r.note) + '"><input type="checkbox" name="roles" data-multi value="' + esc(r.name) + '"' +
+            ((a.roles || []).indexOf(r.name) >= 0 ? ' checked' : '') + '> ' + esc(r.name) + '</label>';
+        }).join('') + '</div><span class="hint">' + roles.map(function (r) { return r.name + '：' + r.note; }).join('；') + '</span></div>' +
+        '<button type="submit" hidden></button>';
+      return form;
+    }
+
+    App.registerPage('settings', {
+      title: '系統設定',
+      perm: ['system.settings.manage', 'system.account.manage'],
+      render: function (el) {
+        var canSettings = App.can('system.settings.manage');
+        var canAccounts = App.can('system.account.manage');
+        el.innerHTML = '<div class="page-head"><div><h1>系統設定</h1><p>分會資料、每週提醒與帳號</p></div></div><div class="stack">' +
+          (canSettings ? '<section class="card"><div class="card-head"><h2>分會設定</h2></div><form id="st-form" class="stack"></form></section>' +
+            '<section class="card"><div class="card-head"><h2>每週提醒</h2><button type="button" class="btn btn-primary btn-sm" id="rm-add">＋ 新增提醒</button></div>' +
+            '<p class="muted small" style="margin-top:0">顯示在首頁「這一週」，例如「週三 12:00 BNI Connect 登錄截止」。</p><div id="rm-list"></div></section>' : '') +
+          (canAccounts ? '<section class="card"><div class="card-head"><h2>帳號管理</h2><button type="button" class="btn btn-primary btn-sm" id="ac-add">＋ 新增帳號</button></div><div id="ac-list"></div></section>' : '') +
+          (canSettings ? '<section class="card"><div class="card-head"><h2>資料</h2></div><p class="muted" style="margin-top:0">所有資料都存在 Google 試算表；刪除一律只標記「已刪除」，原始資料留在試算表。</p><div class="toolbar" id="st-links"></div></section>' : '') +
+          '</div>';
+        var $ = function (sel) { return el.querySelector(sel); };
+        var reminders = [];
+        var accountsData = null;
+
+        // 分會設定
+        function renderSettings(page) {
+          var byKey = {};
+          page.form.forEach(function (it) { byKey[it.key] = it; });
+          $('#st-form').innerHTML = GROUPS.map(function (g) {
+            return '<div><h3 style="margin:4px 0 10px">' + esc(g[0]) + '</h3><div class="form-grid">' + g[1].map(function (key) {
+              var it = byKey[key];
+              return it ? App.field(it.title, settingControl(it), false, it.note) : '';
+            }).join('') + '</div></div>';
+          }).join('') + '<div><button type="submit" class="btn btn-primary">儲存設定</button></div>';
+          var links = ['<a class="btn" target="_blank" rel="noopener" href="' + esc(page.spreadsheetUrl) + '">開啟資料試算表</a>'];
+          if (App.session.registerUrl) links.push('<a class="btn" target="_blank" rel="noopener" href="' + esc(App.session.registerUrl) + '">開啟報名頁</a>');
+          $('#st-links').innerHTML = links.join('');
+          reminders = page.reminders;
+          renderReminders();
+        }
+
+        function renderReminders() {
+          if (!reminders.length) {
+            App.emptyState($('#rm-list'), '還沒有每週提醒');
+            return;
+          }
+          $('#rm-list').innerHTML = '<ul class="list">' + reminders.map(function (r) {
+            return '<li data-id="' + esc(r.id) + '"><span>' + (r.enabled ? '' : '<span class="tag gray">停用</span> ') +
+              '<b>週' + esc(r.weekdayLabel) + ' ' + esc(r.time) + '</b> ' + esc(r.content) + (r.pushLine ? ' <span class="tag">LINE 推播</span>' : '') + '</span>' +
+              '<span class="toolbar"><button type="button" class="btn btn-sm" data-act="edit">編輯</button>' +
+              '<button type="button" class="btn btn-sm btn-danger" data-act="delete">刪除</button></span></li>';
+          }).join('') + '</ul>';
+        }
+
+        function loadSettings() {
+          App.skeleton($('#st-form'), 8);
+          return App.api('settings.get').then(renderSettings).catch(function (err) {
+            App.errorState($('#st-form'), err);
+            App.handleError(err);
+          });
+        }
+
+        function editReminder(r) {
+          var form = reminderForm(r);
+          App.modal.open({
+            title: r.id ? '編輯提醒' : '新增提醒',
+            body: form,
+            actions: [{ label: '取消', value: null }, { label: '儲存', value: 'ok', cls: 'btn-primary', primary: true }]
+          }).then(function (v) {
+            if (v !== 'ok') return;
+            var data = App.formValues(form);
+            data.id = r.id || '';
+            return App.api('reminders.save', data).then(function () {
+              App.toast('提醒已儲存');
+              loadSettings();
+            });
+          }).catch(App.handleError);
+        }
+
+        // 帳號
+        function renderAccounts() {
+          var rows = accountsData.accounts;
+          $('#ac-list').innerHTML = '<div class="table-wrap"><table class="data"><thead><tr><th>帳號</th><th>顯示名稱</th><th>職稱</th><th>角色</th>' +
+            '<th>狀態</th><th>最後登入</th><th></th></tr></thead><tbody>' + rows.map(function (a) {
+              return '<tr data-id="' + esc(a.id) + '"' + (a.status === '停用' ? ' class="dim"' : '') + '><td>' + esc(a.username) + '</td><td><b>' + esc(a.displayName) +
+                '</b></td><td>' + esc(a.title) + '</td><td>' + esc(a.roles.join('、') || '（無）') + '</td><td>' + esc(a.status) + '</td><td>' + esc(a.lastLoginAt || '—') +
+                '</td><td><button type="button" class="btn btn-sm" data-act="edit">編輯</button> <button type="button" class="btn btn-sm" data-act="password">重設密碼</button> ' +
+                '<button type="button" class="btn btn-sm btn-danger" data-act="delete">刪除</button></td></tr>';
+            }).join('') + '</tbody></table></div>';
+        }
+
+        function loadAccounts() {
+          App.skeleton($('#ac-list'), 4);
+          return App.api('accounts.list').then(function (res) {
+            accountsData = res;
+            renderAccounts();
+          }).catch(function (err) {
+            App.errorState($('#ac-list'), err);
+            App.handleError(err);
+          });
+        }
+
+        function editAccount(a) {
+          var isNew = !a.id;
+          var form = accountForm(a, accountsData.roles, isNew);
+          App.modal.open({
+            title: isNew ? '新增帳號' : '編輯帳號：' + a.username,
+            body: form,
+            actions: [
+              { label: '取消', value: null },
+              {
+                label: '儲存', value: 'ok', cls: 'btn-primary', primary: true, validate: function () {
+                  var v = App.formValues(form);
+                  if (isNew && !v.username) { App.toast('請填寫登入帳號', 'error'); return false; }
+                  if (!v.displayName) { App.toast('請填寫顯示名稱', 'error'); return false; }
+                  if (isNew && (v.password || '').length < 8) { App.toast('密碼至少 8 碼', 'error'); return false; }
+                  return true;
+                }
+              }
+            ]
+          }).then(function (v) {
+            if (v !== 'ok') return;
+            var data = App.formValues(form);
+            data.id = a.id || '';
+            return App.api(isNew ? 'accounts.create' : 'accounts.update', data).then(function () {
+              App.toast('帳號已儲存');
+              loadAccounts();
+            });
+          }).catch(App.handleError);
+        }
+
+        function resetPassword(a) {
+          var form = document.createElement('form');
+          form.className = 'form-grid';
+          form.innerHTML = App.field('新密碼', '<input type="password" name="password" autocomplete="new-password">', true, '至少 8 碼；重設後這個帳號在所有裝置都要重新登入', 'full') +
+            '<button type="submit" hidden></button>';
+          App.modal.open({
+            title: '重設密碼：' + a.username,
+            body: form,
+            actions: [
+              { label: '取消', value: null },
+              {
+                label: '重設', value: 'ok', cls: 'btn-primary', primary: true, validate: function () {
+                  if (App.formValues(form).password.length >= 8) return true;
+                  App.toast('密碼至少 8 碼', 'error');
+                  return false;
+                }
+              }
+            ]
+          }).then(function (v) {
+            if (v !== 'ok') return;
+            return App.api('accounts.resetPassword', { id: a.id, password: App.formValues(form).password }).then(function () {
+              App.toast('已重設 ' + a.username + ' 的密碼');
+            });
+          }).catch(App.handleError);
+        }
+
+        if (canSettings) {
+          $('#st-form').addEventListener('submit', function (e) {
+            e.preventDefault();
+            var btn = $('#st-form button[type=submit]');
+            App.withButton(btn, function () {
+              return App.api('settings.save', App.formValues($('#st-form'))).then(function () {
+                return App.refreshSession();
+              }).then(function () {
+                App.toast('設定已儲存');
+                return loadSettings();
+              });
+            }).catch(App.handleError);
+          });
+          $('#rm-add').addEventListener('click', function () { editReminder({}); });
+          $('#rm-list').addEventListener('click', function (e) {
+            var btn = e.target.closest('[data-act]');
+            if (!btn) return;
+            var r = reminders.filter(function (x) { return x.id === btn.closest('li').getAttribute('data-id'); })[0];
+            if (!r) return;
+            if (btn.getAttribute('data-act') === 'edit') {
+              editReminder(r);
+              return;
+            }
+            App.modal.confirm('刪除提醒', '確定刪除「' + r.content + '」？', '刪除').then(function (ok) {
+              if (!ok) return;
+              return App.api('reminders.delete', { id: r.id }).then(function () {
+                App.toast('已刪除');
+                loadSettings();
+              });
+            }).catch(App.handleError);
+          });
+          loadSettings();
+        }
+
+        if (canAccounts) {
+          $('#ac-add').addEventListener('click', function () {
+            if (accountsData) editAccount({ roles: [] });
+          });
+          $('#ac-list').addEventListener('click', function (e) {
+            var btn = e.target.closest('[data-act]');
+            if (!btn || !accountsData) return;
+            var a = accountsData.accounts.filter(function (x) { return x.id === btn.closest('tr').getAttribute('data-id'); })[0];
+            if (!a) return;
+            var act = btn.getAttribute('data-act');
+            if (act === 'edit') editAccount(a);
+            else if (act === 'password') resetPassword(a);
+            else {
+              App.modal.confirm('刪除帳號', '確定刪除帳號「' + a.username + '」？刪除後這個帳號無法登入（資料仍保留在試算表）。', '刪除').then(function (ok) {
+                if (!ok) return;
+                return App.api('accounts.delete', { id: a.id }).then(function () {
+                  App.toast('已刪除');
+                  loadAccounts();
+                });
+              }).catch(App.handleError);
+            }
+          });
+          loadAccounts();
+        }
+      }
+    });
+  })();
+</script>

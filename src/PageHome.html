@@ -1,0 +1,152 @@
+<script>
+  /* 首頁：問候、這一週（活動與每週提醒）、下一場例會、下一場活動、依權限顯示的提醒卡片 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+
+    function clockText() {
+      var d = new Date();
+      return d.getFullYear() + '/' + pad(d.getMonth() + 1) + '/' + pad(d.getDate()) + '（' + App.WEEKDAYS[d.getDay()] + '）' +
+        pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds());
+    }
+
+    function itemText(day, it) {
+      var when = '週' + day.weekday + (it.time ? ' ' + it.time : '');
+      var extra = it.kind === 'event' && it.place ? '・' + it.place : '';
+      return '<li' + (it.cancelled ? ' class="cancelled"' : '') + '><span class="when">' + esc(when) + '</span>' +
+        esc(it.title + extra + (it.cancelled ? '（停會）' : '')) + '</li>';
+    }
+
+    function weekCard(data, selected) {
+      var days = data.days;
+      var strip = days.map(function (d, i) {
+        var cls = [i === 0 ? 'today' : '', d.items.length ? 'has' : '', d.date === selected ? 'sel' : ''].join(' ');
+        return '<button type="button" class="' + cls + '" data-day="' + d.date + '"><div class="bar"></div>' +
+          '<div class="wd">' + esc(d.weekday) + '</div><div class="dn">' + d.day + '</div><span class="dot"></span></button>';
+      }).join('');
+      var shown = selected ? days.filter(function (d) { return d.date === selected; }) : days;
+      var items = [];
+      shown.forEach(function (d) { d.items.forEach(function (it) { items.push(itemText(d, it)); }); });
+      var empty = selected ? '這天沒有排程' : '這週沒有排程';
+      return '<section class="card"><div class="card-head"><h2>這一週</h2>' +
+        (selected ? '<button type="button" class="card-link" data-day="">看整週</button>' : '') + '</div>' +
+        '<div class="week">' + strip + '</div>' +
+        '<ul class="agenda">' + (items.length ? items.join('') : '<li class="muted">' + empty + '</li>') + '</ul></section>';
+    }
+
+    function countsRow(e) {
+      if (!e.counts || (!e.isMeeting && !e.openRegistration)) return '';
+      var c = e.counts;
+      var boxes = e.isMeeting ?
+        [['來賓報名', c.guests], ['已繳費', c.paid], ['已到場', c.checkedIn]] :
+        [['報名', c.total], ['會員', c.members], ['來賓', c.guests]];
+      return '<div class="stat-row">' + boxes.map(function (b) {
+        return '<div class="stat-box"><b>' + b[1] + '</b><span>' + b[0] + '</span></div>';
+      }).join('') + '</div>';
+    }
+
+    function eventCard(e, heading, today) {
+      var meta = [e.timeLabel, e.place].filter(Boolean).join('・');
+      var note = e.isMeeting ? '' : (e.openRegistration ? '開放報名' + (e.fee ? '・費用 ' + App.money(e.fee) : '') : '內部會議，不需要報名。');
+      var actions = [];
+      actions.push('<button type="button" class="btn btn-outline" data-detail="' + esc(e.id) + '">活動詳情</button>');
+      if (App.allowed('guests') && (e.isMeeting || e.openRegistration)) actions.push('<button type="button" class="btn" data-open="guests" data-event="' + esc(e.id) + '">活動來賓</button>');
+      if (App.allowed('checkin') && e.date === today) actions.push('<button type="button" class="btn" data-open="checkin" data-event="' + esc(e.id) + '">簽到</button>');
+      return '<section class="card flush"><div class="card-head"><h2>' + esc(App.shortDate(e.date) + ' ' + heading) + '</h2>' +
+        (App.allowed('events') ? '<button type="button" class="card-link" data-go="events">全部活動</button>' : '') + '</div>' +
+        '<div class="card-body"><div class="event-title">' + esc(e.name) + '</div><div class="event-meta">' + esc(meta || '時間地點未定') + '</div>' +
+        '<div class="toolbar">' + actions.join('') + '</div>' +
+        (note ? '<p class="muted" style="margin:12px 0 0">' + esc(note) + '</p>' : '') + countsRow(e) + '</div></section>';
+    }
+
+    function expiringCard(card) {
+      if (!card || !card.members.length) return '';
+      return '<section class="card"><div class="card-head"><h2>會籍即將到期</h2>' +
+        (App.allowed('members') ? '<button type="button" class="card-link" data-go="members">會員名冊</button>' : '') + '</div><ul class="list">' +
+        card.members.map(function (m) {
+          var left = m.daysLeft < 0 ? '已過期 ' + (-m.daysLeft) + ' 天' : m.daysLeft === 0 ? '今天到期' : m.daysLeft + ' 天後';
+          return '<li><span><b>' + esc(m.name) + '</b> <span class="muted small">' + esc(m.category || '') + '</span></span>' +
+            '<span class="' + (m.daysLeft < 0 ? 'tag red' : 'tag') + '">' + esc(m.expiryDate + '・' + left) + '</span></li>';
+        }).join('') + '</ul></section>';
+    }
+
+    function showDetail(e) {
+      var rows = [
+        ['日期', e.dateLabel], ['時間', e.timeLabel || '未定'], ['地點', e.place || '未定'], ['類型', e.type],
+        ['報名', e.openRegistration ? '開放報名' : '不開放報名'], ['費用', e.fee ? App.money(e.fee) : '免費'],
+        ['名額', e.capacity ? e.capacity + ' 人' : '不限']
+      ];
+      App.modal.open({
+        title: e.name,
+        body: '<ul class="list">' + rows.map(function (r) {
+          return '<li><span class="muted">' + esc(r[0]) + '</span><span>' + esc(r[1]) + '</span></li>';
+        }).join('') + '</ul>' + (e.description ? '<p style="white-space:pre-wrap">' + esc(e.description) + '</p>' : '')
+      });
+    }
+
+    App.registerPage('home', {
+      title: '首頁',
+      perm: 'home.dashboard.view',
+      render: function (el) {
+        var acc = App.session.account;
+        el.innerHTML = '<section class="hello"><h1>' + esc(App.greeting(new Date().getHours()) + '，' + acc.displayName) + '</h1>' +
+          '<p>這週要做的事、下一場活動與待辦</p><div class="hello-bar"><div class="clock"><span id="clock">' + clockText() + '</span>' +
+          '<button type="button" class="chip aa" id="aa-btn" title="調整字體大小">Aa</button></div>' +
+          '<div class="rel"><button type="button" class="chip" id="account-chip">' + esc(acc.displayName) + ' ▾</button></div></div></section>' +
+          '<div class="stack" id="home-body"></div>';
+        var timer = setInterval(function () {
+          var c = document.getElementById('clock');
+          if (c) c.textContent = clockText();
+        }, 1000);
+        var body = el.querySelector('#home-body');
+        var data = null;
+        var selected = '';
+        var events = {};
+
+        function render() {
+          var parts = [weekCard(data, selected)];
+          if (data.nextMeeting) parts.push(eventCard(data.nextMeeting, '例會', data.today));
+          if (data.nextEvent) parts.push(eventCard(data.nextEvent, data.nextEvent.type, data.today));
+          parts.push(expiringCard(data.cards.expiring));
+          body.innerHTML = parts.join('');
+        }
+
+        el.querySelector('#aa-btn').addEventListener('click', App.cycleFontSize);
+        el.querySelector('#account-chip').addEventListener('click', function () { App.openAccountMenu(this); });
+        body.addEventListener('click', function (e) {
+          var day = e.target.closest('[data-day]');
+          if (day) {
+            var d = day.getAttribute('data-day');
+            selected = selected === d ? '' : d;
+            render();
+            return;
+          }
+          var detail = e.target.closest('[data-detail]');
+          if (detail) {
+            showDetail(events[detail.getAttribute('data-detail')]);
+            return;
+          }
+          var open = e.target.closest('[data-open]');
+          if (open) {
+            App.state.eventId = open.getAttribute('data-event');
+            App.go(open.getAttribute('data-open'));
+          }
+        });
+
+        App.skeleton(body, 6);
+        App.api('home.data').then(function (res) {
+          data = res;
+          [res.nextMeeting, res.nextEvent].forEach(function (e) { if (e) events[e.id] = e; });
+          render();
+        }).catch(function (err) {
+          App.errorState(body, err);
+          App.handleError(err);
+        });
+        return function () { clearInterval(timer); };
+      }
+    });
+  })();
+</script>

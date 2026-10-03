@@ -171,6 +171,67 @@ class FakeCache {
   remove(k) { delete this.map[k]; }
 }
 
+/** Apps Script 的 HMAC 回傳有正負號的 byte 陣列 */
+function hmacSha256Bytes(value, key) {
+  return Array.from(crypto.createHmac('sha256', String(key)).update(String(value), 'utf8').digest()).map((b) => (b > 127 ? b - 256 : b));
+}
+
+/** 寄信：記錄寄出的信，模擬每日額度 */
+function createMailApp(outbox) {
+  const state = { quota: 100 };
+  return {
+    state,
+    getRemainingDailyQuota: () => state.quota,
+    sendEmail(message) {
+      if (typeof message !== 'object') throw new Error('假 MailApp 只支援物件參數');
+      if (state.quota <= 0) throw new Error('Service invoked too many times for one day: email.');
+      if (!/@/.test(message.to || '')) throw new Error('Invalid email: ' + message.to);
+      state.quota -= 1;
+      outbox.push(JSON.parse(JSON.stringify(message)));
+    }
+  };
+}
+
+/** 外部 API：測試可以設定 handler(url, options) 回傳 { code, body } */
+function createUrlFetchApp(requests) {
+  const api = {
+    handler: () => ({ code: 200, body: '{}' }),
+    fetch(url, options) {
+      const opts = options || {};
+      requests.push({ url, method: (opts.method || 'get').toLowerCase(), headers: opts.headers || {}, payload: opts.payload || '' });
+      const res = api.handler(url, opts) || { code: 200, body: '{}' };
+      if (res.code >= 400 && !opts.muteHttpExceptions) throw new Error('Request failed for ' + url + ' returned code ' + res.code);
+      return { getResponseCode: () => res.code, getContentText: () => (typeof res.body === 'string' ? res.body : JSON.stringify(res.body)) };
+    }
+  };
+  return api;
+}
+
+/** 觸發器：只記錄建立與刪除 */
+function createTriggerStore() {
+  const triggers = [];
+  let seq = 0;
+  const builder = (handler) => {
+    const spec = { handler, every: 0 };
+    const chain = {
+      timeBased: () => chain,
+      everyHours: (n) => { spec.every = n; return chain; },
+      create: () => {
+        const t = { id: 't' + (++seq), getHandlerFunction: () => handler, getUniqueId: () => 't' + seq, spec };
+        triggers.push(t);
+        return t;
+      }
+    };
+    return chain;
+  };
+  return {
+    triggers,
+    getProjectTriggers: () => triggers.slice(),
+    newTrigger: builder,
+    deleteTrigger: (t) => { const i = triggers.indexOf(t); if (i >= 0) triggers.splice(i, 1); }
+  };
+}
+
 /**
  * 建立假環境並載入 src/*.js。
  * order: 'normal' | 'reverse'（檔案載入順序，用來確認沒有載入順序的相依）
@@ -180,6 +241,11 @@ function createServer({ srcDir = path.join(__dirname, '..', 'src'), order = 'nor
   const ss = new FakeSpreadsheet(TZ);
   const scriptProps = new FakeProps();
   const cache = new FakeCache();
+  const outbox = [];
+  const requests = [];
+  const mail = createMailApp(outbox);
+  const urlFetch = createUrlFetchApp(requests);
+  const triggerStore = createTriggerStore();
   const env = {
     SpreadsheetApp: {
       getActiveSpreadsheet: () => ss,
@@ -190,9 +256,24 @@ function createServer({ srcDir = path.join(__dirname, '..', 'src'), order = 'nor
     PropertiesService: { getScriptProperties: () => scriptProps, getUserProperties: () => new FakeProps() },
     CacheService: { getScriptCache: () => cache },
     LockService: { getScriptLock: () => ({ waitLock() {}, tryLock: () => true, releaseLock() {} }) },
-    Utilities: { formatDate, getUuid: () => crypto.randomUUID() },
+    Utilities: {
+      formatDate,
+      getUuid: () => crypto.randomUUID(),
+      computeHmacSha256Signature: hmacSha256Bytes
+    },
     Session: { getScriptTimeZone: () => TZ },
-    ScriptApp: { getService: () => ({ getUrl: () => (typeof url === 'function' ? url() : url) }) },
+    ScriptApp: {
+      getService: () => ({ getUrl: () => (typeof url === 'function' ? url() : url) }),
+      getProjectTriggers: triggerStore.getProjectTriggers,
+      newTrigger: triggerStore.newTrigger,
+      deleteTrigger: triggerStore.deleteTrigger
+    },
+    MailApp: mail,
+    UrlFetchApp: urlFetch,
+    ContentService: {
+      MimeType: { TEXT: 'text/plain', JSON: 'application/json' },
+      createTextOutput: (text) => ({ text, setMimeType() { return this; }, getContent() { return this.text; } })
+    },
     console: { log() {}, error() {} }
   };
   const ctx = vm.createContext(env);
@@ -212,11 +293,27 @@ function createServer({ srcDir = path.join(__dirname, '..', 'src'), order = 'nor
     return JSON.parse(JSON.stringify(result === undefined ? null : result));
   }
 
-  function api(action, data, pin) {
-    return call('apiCall', { action, data: data || {}, pin: pin || '' });
+  function api(action, data, token) {
+    return call('apiCall', { action, data: data || {}, token: token || '' });
   }
 
-  return { ctx, ss, scriptProps, cache, setNow, call, api };
+  /** 模擬從試算表選單建立帳號（不經過網頁） */
+  function createAccount(fields) {
+    vm.runInContext('Db.reset()', ctx); // Db 是 const，不在全域物件上
+    return JSON.parse(JSON.stringify(ctx.createAccount_(fields)));
+  }
+
+  /** 登入並回傳 token；失敗直接丟錯 */
+  function login(username, password) {
+    const res = api('auth.login', { username, password });
+    if (!res.ok) throw new Error(res.error);
+    return res.data.token;
+  }
+
+  return {
+    ctx, ss, scriptProps, cache, setNow, call, api, createAccount, login,
+    outbox, mail: mail.state, requests, urlFetch, triggers: triggerStore.triggers
+  };
 }
 
 function assertNoDate(value, where) {

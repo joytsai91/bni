@@ -1,0 +1,313 @@
+<script>
+  /* 簽到與列印：例會點名（P/L 自動判定）、來賓與活動報名簽到繳費、出席結果文字、列印簽到表名牌桌牌 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    var STATUS = {
+      P: { label: '出席', cls: 'st-P' },
+      L: { label: '遲到', cls: 'st-L' },
+      S: { label: '代理', cls: 'st-S' },
+      M: { label: '病假', cls: 'st-M' },
+      A: { label: '缺席', cls: 'st-A' }
+    };
+
+    function memberCard(m) {
+      var st = STATUS[m.status];
+      var time = m.checkedInAt && (m.status === 'P' || m.status === 'L') ? ' ' + m.checkedInAt.slice(11, 16) : '';
+      var badge = st ? st.label + (m.status === 'S' && m.substitute ? '・' + m.substitute : '') + time : '未簽到';
+      return '<button type="button" class="member-card ' + (st ? st.cls : 'st-none') + (m.pending ? ' pending' : '') +
+        '" data-id="' + esc(m.id) + '"><span class="mc-name">' + esc(m.name) + '</span>' +
+        '<span class="mc-sub">' + esc(m.category || m.company || '') + '</span>' +
+        '<span class="mc-badge">' + esc(badge) + '</span></button>';
+    }
+
+    function regRow(g, showRole) {
+      var sub = [g.company, g.category].filter(Boolean).join('・') + (g.inviter ? '｜邀請人：' + g.inviter : '');
+      return '<div class="guest-row' + (g.checkedInAt ? ' is-in' : '') + '" data-id="' + esc(g.id) + '">' +
+        '<div><div class="gr-name">' + esc(g.name) + (showRole && g.role === '會員' ? ' <span class="tag">會員</span>' : '') +
+        (g.source === '現場' ? ' <span class="tag red">現場</span>' : '') + '</div>' +
+        '<div class="gr-sub">' + esc(sub) + '</div></div><div class="gr-actions">' +
+        '<button type="button" class="pill' + (g.checkedInAt ? ' on' : '') + '" data-act="checkin">' +
+        (g.checkedInAt ? '已到 ' + esc(g.checkedInAt.slice(11, 16)) : '簽到') + '</button>' +
+        '<button type="button" class="pill' + (g.paid ? ' on' : '') + '" data-act="paid">' + (g.paid ? '已繳費' : '未繳費') + '</button>' +
+        '</div></div>';
+    }
+
+    App.registerPage('checkin', {
+      title: '簽到與列印',
+      perm: ['checkin.attendance.manage', 'checkin.print.view'],
+      render: function (el) {
+        var canCheckin = App.can('checkin.attendance.manage');
+        var canPrint = App.can('checkin.print.view');
+        var state = { event: null, board: null, tab: canCheckin ? 'checkin' : 'print' };
+        el.innerHTML = '<div class="page-head"><div><h1>簽到與列印</h1><p>例會點名、來賓簽到繳費、簽到表與名牌桌牌</p></div>' +
+          (canCheckin && canPrint ? '<div class="subtabs"><button type="button" data-tab="checkin">簽到</button><button type="button" data-tab="print">列印</button></div>' : '') +
+          '</div><div class="stack"><div id="ck-picker"></div>' +
+          '<div id="ck-checkin" class="stack"></div><div id="ck-print" class="stack"></div></div>';
+        var checkinEl = el.querySelector('#ck-checkin');
+        var printEl = el.querySelector('#ck-print');
+
+        function showTab() {
+          App.$$('.subtabs button', el).forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === state.tab); });
+          checkinEl.hidden = state.tab !== 'checkin';
+          printEl.hidden = state.tab !== 'print';
+          if (state.tab === 'print') renderPrint();
+        }
+
+        // ---------- 簽到 ----------
+
+        function counts() {
+          var c = { P: 0, L: 0, S: 0, M: 0, A: 0, none: 0 };
+          state.board.members.forEach(function (m) { c[m.status || 'none'] += 1; });
+          return c;
+        }
+
+        function renderCheckinShell() {
+          var e = state.event;
+          checkinEl.innerHTML = '<div class="stats" id="ck-stats"></div>' +
+            '<div class="toolbar">' + (e.isMeeting ? '<input type="search" id="ck-search" placeholder="搜尋會員姓名、公司、專業別">' : '') +
+            '<button type="button" class="btn" id="ck-refresh">重新整理</button>' +
+            (e.isMeeting ? '<button type="button" class="btn" id="ck-text">出席結果文字</button><button type="button" class="btn" id="ck-absent">未簽到者記缺席</button>' : '') +
+            '</div>' + (e.isMeeting ? '<h2>會員 <span class="muted small">當天點一下即簽到，超過遲到時間自動記遲到；再點一下可改代理、病假等</span></h2>' +
+            '<div class="member-grid" id="ck-members"></div>' : '') +
+            '<div class="section-head"><h2>' + (e.isMeeting ? '來賓' : '報名名單') + '</h2>' +
+            '<button type="button" class="btn btn-primary" id="ck-walkin">＋ ' + (e.isMeeting ? '現場來賓' : '現場報名') + '</button></div>' +
+            '<div class="guest-list" id="ck-regs"></div>';
+          var search = checkinEl.querySelector('#ck-search');
+          if (search) search.addEventListener('input', renderBoard);
+          checkinEl.querySelector('#ck-refresh').addEventListener('click', loadBoard);
+          if (e.isMeeting) {
+            checkinEl.querySelector('#ck-text').addEventListener('click', function () {
+              if (state.board) App.modal.showText('出席結果', attendanceText());
+            });
+            checkinEl.querySelector('#ck-absent').addEventListener('click', markAbsent);
+            checkinEl.querySelector('#ck-members').addEventListener('click', onMemberClick);
+          }
+          checkinEl.querySelector('#ck-walkin').addEventListener('click', openWalkin);
+          checkinEl.querySelector('#ck-regs').addEventListener('click', onRegClick);
+        }
+
+        function renderBoard() {
+          var b = state.board;
+          if (!b || b.event.id !== state.event.id) return;
+          var e = state.event;
+          var regsEl = checkinEl.querySelector('#ck-regs');
+          if (e.isMeeting) {
+            var q = (checkinEl.querySelector('#ck-search').value || '').trim().toLowerCase();
+            var members = b.members.filter(function (m) {
+              return !q || (m.name + ' ' + m.company + ' ' + m.category).toLowerCase().indexOf(q) >= 0;
+            });
+            checkinEl.querySelector('#ck-members').innerHTML = members.length ? members.map(memberCard).join('') :
+              '<p class="empty">' + (b.members.length ? '找不到符合的會員' : '會員名冊是空的：請到「會員名冊」新增，或在 PALMS 匯入報表自動建立') + '</p>';
+          }
+          regsEl.innerHTML = b.registrations.length ? b.registrations.map(function (g) { return regRow(g, !e.isMeeting); }).join('') :
+            '<p class="empty">' + (e.isMeeting ? '這次例會還沒有來賓' : '還沒有人報名') + '</p>';
+          var arrived = b.registrations.filter(function (g) { return g.checkedInAt; }).length;
+          var stats = [];
+          if (e.isMeeting) {
+            var c = counts();
+            stats = [['會員', b.members.length], ['出席', c.P], ['遲到', c.L], ['代理', c.S], ['病假', c.M], ['缺席', c.A], ['未簽到', c.none], ['來賓到場', arrived + '/' + b.registrations.length]];
+          } else {
+            stats = [['報名', b.registrations.length], ['已到場', arrived], ['已繳費', b.registrations.filter(function (g) { return g.paid; }).length]];
+          }
+          checkinEl.querySelector('#ck-stats').innerHTML = stats.map(function (x) {
+            return '<span class="stat">' + esc(x[0]) + '<b>' + esc(x[1]) + '</b></span>';
+          }).join('');
+        }
+
+        function loadBoard() {
+          var id = state.event.id;
+          if (!state.board || state.board.event.id !== id) App.skeleton(checkinEl.querySelector('#ck-regs'), 4);
+          return App.api('checkin.board', { eventId: id }).then(function (board) {
+            if (state.event.id !== id) return;
+            state.board = board;
+            renderBoard();
+          }).catch(App.handleError);
+        }
+
+        function setStatus(m, status, substitute) {
+          var prev = { status: m.status, substitute: m.substitute, checkedInAt: m.checkedInAt };
+          m.status = status === 'auto' ? 'P' : status;
+          m.pending = true;
+          renderBoard();
+          return App.api('checkin.member', { eventId: state.event.id, memberId: m.id, status: status, substitute: substitute || '' })
+            .then(function (res) {
+              m.status = res.status;
+              m.substitute = res.substitute;
+              m.checkedInAt = res.checkedInAt;
+              m.pending = false;
+              renderBoard();
+              App.toast(m.name + '：' + (STATUS[res.status] ? STATUS[res.status].label : '已清除'));
+            })
+            .catch(function (err) {
+              m.status = prev.status;
+              m.substitute = prev.substitute;
+              m.checkedInAt = prev.checkedInAt;
+              m.pending = false;
+              renderBoard();
+              App.handleError(err);
+            });
+        }
+
+        function openStatusModal(m) {
+          var body = document.createElement('div');
+          body.innerHTML = '<p class="muted">' + esc([m.company, m.category].filter(Boolean).join('・') || '　') + '</p>' +
+            '<div class="status-buttons">' + ['P', 'L', 'S', 'M', 'A'].map(function (k) {
+              return '<button type="button" class="status-btn ' + STATUS[k].cls + (m.status === k ? ' current' : '') +
+                '" data-modal-value="' + k + '">' + k + ' ' + STATUS[k].label + '</button>';
+            }).join('') + '</div>' +
+            App.field('代理人姓名（選「代理」時填寫）', '<input type="text" id="sub-name" maxlength="40" value="' + esc(m.substitute || '') + '">');
+          App.modal.open({
+            title: m.name,
+            body: body,
+            actions: [{ label: '清除簽到', value: 'clear', cls: 'btn-danger' }, { label: '取消', value: null }]
+          }).then(function (value) {
+            if (!value) return;
+            setStatus(m, value === 'clear' ? '' : value, body.querySelector('#sub-name').value.trim());
+          });
+        }
+
+        function onMemberClick(e) {
+          var card = e.target.closest('.member-card');
+          if (!card || !state.board) return;
+          var m = state.board.members.filter(function (x) { return x.id === card.getAttribute('data-id'); })[0];
+          if (!m || m.pending) return;
+          // 例會當天點一下直接簽到；已簽到或補登其他日期則開狀態選單
+          if (!m.status && state.board.isToday) setStatus(m, 'auto');
+          else openStatusModal(m);
+        }
+
+        function onRegClick(e) {
+          var btn = e.target.closest('[data-act]');
+          if (!btn || !state.board) return;
+          var id = btn.closest('.guest-row').getAttribute('data-id');
+          var g = state.board.registrations.filter(function (x) { return x.id === id; })[0];
+          if (!g) return;
+          var patch = btn.getAttribute('data-act') === 'checkin' ? { checkedIn: !g.checkedInAt } : { paid: !g.paid };
+          App.withButton(btn, function () {
+            return App.api('registrations.update', { id: id, patch: patch }).then(function (updated) {
+              g.checkedInAt = updated.checkedInAt;
+              g.paid = updated.paid;
+              g.paidAmount = updated.paidAmount;
+              renderBoard();
+            });
+          }).catch(App.handleError);
+        }
+
+        function markAbsent() {
+          var c = state.board ? counts().none : 0;
+          if (!c) {
+            App.toast('所有會員都已有出席狀態');
+            return;
+          }
+          App.modal.confirm('未簽到者記缺席', '將 ' + c + ' 位還沒簽到的會員記為缺席 (A)，確定嗎？', '記為缺席').then(function (ok) {
+            if (!ok) return;
+            return App.api('checkin.markAbsent', { eventId: state.event.id }).then(function (res) {
+              App.toast('已記錄 ' + res.count + ' 位缺席');
+              loadBoard();
+            });
+          }).catch(App.handleError);
+        }
+
+        function attendanceText() {
+          var b = state.board;
+          var c = counts();
+          var names = { L: [], S: [], M: [], A: [], none: [] };
+          b.members.forEach(function (m) {
+            var k = m.status || 'none';
+            if (names[k]) names[k].push(m.status === 'S' && m.substitute ? m.name + '（代理人：' + m.substitute + '）' : m.name);
+          });
+          var lines = [
+            '【' + App.session.settings.chapterName + '】' + App.dateLabel(b.event.date) + ' 出席結果',
+            '會員 ' + b.members.length + ' 位：出席 ' + c.P + '、遲到 ' + c.L + '、代理 ' + c.S + '、病假 ' + c.M + '、缺席 ' + c.A +
+              (c.none ? '、未簽到 ' + c.none : '')
+          ];
+          [['L', '遲到'], ['S', '代理'], ['M', '病假'], ['A', '缺席'], ['none', '未簽到']].forEach(function (x) {
+            if (names[x[0]].length) lines.push(x[1] + '：' + names[x[0]].join('、'));
+          });
+          var arrived = b.registrations.filter(function (g) { return g.checkedInAt; });
+          lines.push('來賓 ' + b.registrations.length + ' 位，到場 ' + arrived.length + ' 位' +
+            (arrived.length ? '：' + arrived.map(function (g) { return g.name; }).join('、') : ''));
+          return lines.join('\n');
+        }
+
+        function openWalkin() {
+          var e = state.event;
+          var form = App.registrationForm({}, { allowMember: !e.isMeeting, withPaid: true });
+          var data = null;
+          App.modal.open({
+            title: e.isMeeting ? '新增現場來賓' : '現場報名',
+            body: form,
+            actions: [
+              { label: '取消', value: null },
+              { label: '新增並簽到', value: 'ok', cls: 'btn-primary', primary: true, validate: function () { data = App.registrationData(form); return !!data; } }
+            ]
+          }).then(function (v) {
+            if (v !== 'ok') return;
+            data.eventId = e.id;
+            return App.api('registrations.walkin', data).then(function (res) {
+              App.toast(res.duplicate ? res.registration.name + ' 已有報名資料，已幫他簽到' : '已新增 ' + res.registration.name);
+              loadBoard();
+            });
+          }).catch(App.handleError);
+        }
+
+        // ---------- 列印 ----------
+
+        function renderPrint() {
+          var e = state.event;
+          var s = App.session.settings;
+          var l = App.Print.badgeLayout(s);
+          var cards = [];
+          if (e.isMeeting) {
+            cards.push(['memberSheet', '會員簽到表', 'A4 直式，在籍會員依名冊順序排列，含代理人簽名欄。', '']);
+          }
+          cards.push(['guestSheet', e.isMeeting ? '來賓簽到表' : '活動簽到表', '已報名的人預先印好，下方留空白列給現場報名。',
+            '<label>空白列 <input type="number" id="pr-blank-rows" value="8" min="0" max="60"></label>']);
+          cards.push(['guestBadges', e.isMeeting ? '來賓名牌' : '名牌', s.badgeWidth + '×' + s.badgeHeight + 'mm，A4 一頁 ' + l.perPage + ' 張（可在系統設定調整尺寸）。',
+            '<label>加印空白名牌 <input type="number" id="pr-blank-badges" value="0" min="0" max="100"></label>']);
+          cards.push(['guestTents', e.isMeeting ? '來賓桌牌' : '桌牌', 'A4 對折立牌，兩面都看得到姓名、公司與邀請人。', '']);
+          if (e.isMeeting) cards.push(['memberTents', '會員桌牌', 'A4 對折立牌，全體在籍會員一人一張。', '']);
+          printEl.innerHTML = '<div class="print-grid">' + cards.map(function (c) {
+            return '<div class="card print-card"><h3>' + esc(c[1]) + '</h3><p>' + esc(c[2]) + '</p>' + c[3] +
+              '<button type="button" class="btn btn-primary" data-print="' + c[0] + '">預覽列印</button></div>';
+          }).join('') + '</div>';
+        }
+
+        printEl.addEventListener('click', function (e) {
+          var btn = e.target.closest('[data-print]');
+          if (!btn || !state.event) return;
+          App.withButton(btn, function () {
+            return App.api('print.data', { eventId: state.event.id }).then(function (data) {
+              var rows = printEl.querySelector('#pr-blank-rows');
+              var badges = printEl.querySelector('#pr-blank-badges');
+              return App.Print.open(btn.getAttribute('data-print'), data, {
+                blankRows: rows ? rows.value : 0,
+                blankBadges: badges ? badges.value : 0
+              });
+            });
+          }).catch(App.handleError);
+        });
+
+        App.$$('.subtabs button', el).forEach(function (b) {
+          b.addEventListener('click', function () {
+            state.tab = b.getAttribute('data-tab');
+            showTab();
+          });
+        });
+
+        App.eventPicker(el.querySelector('#ck-picker'), function (e) {
+          state.event = e;
+          state.board = null;
+          if (canCheckin) {
+            renderCheckinShell();
+            loadBoard();
+          }
+          showTab();
+        });
+      }
+    });
+  })();
+</script>
