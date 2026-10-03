@@ -1,0 +1,214 @@
+<script>
+  /* 評議與追蹤：來賓從第一次來訪到入會；階段、負責人、下次追蹤日、追蹤紀錄、轉為會員 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    function dueTag(l, today) {
+      if (!l.active || !l.nextDate) return '';
+      if (l.nextDate < today) return '<span class="tag red">逾期 ' + esc(App.shortDate(l.nextDate)) + '</span>';
+      if (l.nextDate === today) return '<span class="tag red">今天追蹤</span>';
+      return '<span class="tag gray">下次 ' + esc(App.shortDate(l.nextDate)) + '</span>';
+    }
+
+    function stageTag(stage) {
+      var cls = stage === '已入會' ? 'green' : stage === '暫不考慮' ? 'gray' : '';
+      return '<span class="tag ' + cls + '">' + esc(stage) + '</span>';
+    }
+
+    function leadCard(l, today) {
+      var sub = [l.company, l.category].filter(Boolean).join('・') + (l.inviter ? '｜邀請人：' + l.inviter : '');
+      var meta = [l.visits ? '來訪 ' + l.visits + ' 次' + (l.lastVisit ? '（最近 ' + App.shortDate(l.lastVisit) + '）' : '') : '尚未來訪',
+        l.owner ? '負責人：' + l.owner : '尚未指派負責人'].join('・');
+      return '<button type="button" class="ev-row" data-id="' + esc(l.id) + '"><div class="ev-main">' +
+        '<div class="ev-name">' + esc(l.name) + stageTag(l.stage) + dueTag(l, today) + '</div>' +
+        '<div class="ev-meta">' + esc(sub || '　') + '</div><div class="ev-counts">' + esc(meta) + '</div>' +
+        (l.latest ? '<div class="ev-meta">最新進度：' + esc(l.latest) + '</div>' : '') + '</div></button>';
+    }
+
+    function ownerSelect(current, owners) {
+      var list = owners.slice();
+      if (current && list.indexOf(current) < 0) list.unshift(current);
+      return '<select name="owner"><option value="">（未指派）</option>' + list.map(function (o) {
+        return '<option' + (o === current ? ' selected' : '') + '>' + esc(o) + '</option>';
+      }).join('') + '</select>';
+    }
+
+    function basicFields(l) {
+      return App.field('姓名', '<input type="text" name="name" maxlength="40" value="' + esc(l.name || '') + '">', true) +
+        App.field('公司', '<input type="text" name="company" maxlength="80" value="' + esc(l.company || '') + '">') +
+        App.field('專業別', '<input type="text" name="category" maxlength="60" value="' + esc(l.category || '') + '">') +
+        App.field('手機', '<input type="tel" name="phone" maxlength="30" value="' + esc(l.phone || '') + '">') +
+        App.field('Email', '<input type="email" name="email" maxlength="100" value="' + esc(l.email || '') + '">') +
+        App.field('邀請人', '<input type="text" name="inviter" maxlength="40" value="' + esc(l.inviter || '') + '">');
+    }
+
+    App.registerPage('followup', {
+      title: '評議與追蹤',
+      perm: 'followup.lead.view',
+      render: function (el) {
+        var canManage = App.can('followup.lead.manage');
+        var state = { data: null, filter: 'active', mine: false, q: '' };
+        el.innerHTML = '<div class="page-head"><div><h1>評議與追蹤</h1><p>來賓從第一次來訪到入會；簽到後會自動加入</p></div>' +
+          (canManage ? '<button type="button" class="btn btn-primary" id="fu-add">＋ 新增追蹤</button>' : '') + '</div>' +
+          '<div class="stack"><div class="filter-chips" id="fu-filter"></div><div class="toolbar">' +
+          '<input type="search" id="fu-q" placeholder="搜尋姓名、公司、專業別、邀請人"><label class="check"><input type="checkbox" id="fu-mine"> 只看我負責的</label></div>' +
+          '<div id="fu-list"></div></div>';
+        var listEl = el.querySelector('#fu-list');
+
+        function renderFilter() {
+          var d = state.data;
+          var activeCount = d.activeStages.reduce(function (sum, s) { return sum + d.counts[s]; }, 0);
+          var chips = [['active', '進行中', activeCount]].concat(d.stages.map(function (s) { return [s, s, d.counts[s]]; }), [['all', '全部', d.leads.length]]);
+          el.querySelector('#fu-filter').innerHTML = chips.map(function (c) {
+            return '<button type="button" data-f="' + esc(c[0]) + '"' + (state.filter === c[0] ? ' class="active"' : '') + '>' + esc(c[1]) + ' ' + c[2] + '</button>';
+          }).join('');
+        }
+
+        function render() {
+          var d = state.data;
+          var q = state.q.toLowerCase();
+          var list = d.leads.filter(function (l) {
+            if (state.filter === 'active' && !l.active) return false;
+            if (state.filter !== 'active' && state.filter !== 'all' && l.stage !== state.filter) return false;
+            if (state.mine && l.owner !== d.me) return false;
+            return !q || [l.name, l.company, l.category, l.inviter, l.owner].join(' ').toLowerCase().indexOf(q) >= 0;
+          });
+          renderFilter();
+          if (!list.length) {
+            App.emptyState(listEl, d.leads.length ? '沒有符合的追蹤' : '還沒有追蹤資料：來賓簽到後會自動加入');
+            return;
+          }
+          listEl.innerHTML = '<div class="ev-list">' + list.map(function (l) { return leadCard(l, d.today); }).join('') + '</div>';
+        }
+
+        function load() {
+          if (!state.data) App.skeleton(listEl, 6);
+          return App.api('followup.list').then(function (res) {
+            state.data = res;
+            render();
+          }).catch(function (err) {
+            App.errorState(listEl, err);
+            App.handleError(err);
+          });
+        }
+
+        function openDetail(id) {
+          App.api('followup.get', { id: id }).then(function (res) {
+            var l = res.lead;
+            var canConvert = canManage && App.can('members.member.manage') && !l.memberId && l.stage !== '暫不考慮';
+            var body = document.createElement('form');
+            body.className = 'stack';
+            var info = [['手機', l.phone || '—'], ['Email', l.email || '—'], ['邀請人', l.inviter || '—'],
+              ['來訪', l.visits ? l.visits + ' 次（首次 ' + l.firstVisit + '，最近 ' + l.lastVisit + '）' : '尚未來訪']];
+            if (l.memberId) info.push(['會員', '已轉為會員（' + l.memberId + '）']);
+            body.innerHTML = '<div class="muted">' + esc([l.company, l.category].filter(Boolean).join('・')) + '</div><ul class="list">' + info.map(function (r) {
+              return '<li><span class="muted">' + esc(r[0]) + '</span><span>' + esc(r[1]) + '</span></li>';
+            }).join('') + '</ul>' +
+              (canManage ? '<div class="form-grid">' +
+                App.field('階段', '<select name="stage">' + state.data.stages.map(function (s) {
+                  return '<option' + (s === l.stage ? ' selected' : '') + '>' + esc(s) + '</option>';
+                }).join('') + '</select>') +
+                App.field('負責人', ownerSelect(l.owner, state.data.owners)) +
+                App.field('下次追蹤日', '<input type="date" name="nextDate" value="' + esc(l.nextDate || '') + '">') +
+                App.field('新增追蹤紀錄', '<textarea name="note" rows="2" maxlength="500" placeholder="例如：已電話聯繫，約下週一對一"></textarea>', false, '', 'full') +
+                '<details class="full"><summary class="muted">基本資料</summary><div class="form-grid" style="margin-top:10px">' + basicFields(l) + '</div></details></div>' : '') +
+              '<div><h3 style="margin-bottom:6px">追蹤紀錄</h3>' + (res.logs.length ? '<ul class="list">' + res.logs.map(function (g) {
+                return '<li><span>' + esc(g.content) + '</span><span class="muted small" style="white-space:nowrap">' + esc((g.at || '').slice(5, 16) + '・' + g.by) + '</span></li>';
+              }).join('') + '</ul>' : '<p class="muted">還沒有紀錄</p>') + '</div><button type="submit" hidden></button>';
+            var actions = [{ label: '關閉', value: null }];
+            if (canManage) actions.push({ label: '刪除', value: 'delete', cls: 'btn-danger' });
+            if (canConvert) actions.push({ label: '轉為會員', value: 'convert' });
+            if (canManage) {
+              actions.push({
+                label: '儲存', value: 'save', cls: 'btn-primary', primary: true, validate: function () {
+                  if (App.formValues(body).name) return true;
+                  App.toast('請填寫姓名', 'error');
+                  return false;
+                }
+              });
+            }
+            return App.modal.open({ title: l.name, body: body, actions: actions }).then(function (v) {
+              if (v === 'save') {
+                var data = App.formValues(body);
+                data.id = l.id;
+                return App.api('followup.update', data).then(function () {
+                  App.toast('已儲存');
+                  load();
+                });
+              }
+              if (v === 'convert') {
+                return App.modal.confirm('轉為會員', '在會員名冊新增「' + l.name + '」（入會日今天、引薦人 ' + (l.inviter || '未填') + '），並把追蹤改成「已入會」？', '轉為會員').then(function (ok) {
+                  if (!ok) return;
+                  return App.api('followup.convert', { id: l.id }).then(function (r) {
+                    App.toast('已加入會員名冊（' + r.member.id + '）');
+                    App.refreshSession().catch(App.handleError);
+                    load();
+                  });
+                });
+              }
+              if (v === 'delete') {
+                return App.modal.confirm('刪除追蹤', '確定刪除「' + l.name + '」的追蹤？（資料仍保留在試算表）', '刪除').then(function (ok) {
+                  if (!ok) return;
+                  return App.api('followup.delete', { id: l.id }).then(function () {
+                    App.toast('已刪除');
+                    load();
+                  });
+                });
+              }
+            });
+          }).catch(App.handleError);
+        }
+
+        el.querySelector('#fu-filter').addEventListener('click', function (e) {
+          var b = e.target.closest('[data-f]');
+          if (!b || !state.data) return;
+          state.filter = b.getAttribute('data-f');
+          render();
+        });
+        el.querySelector('#fu-q').addEventListener('input', function () {
+          state.q = this.value.trim();
+          if (state.data) render();
+        });
+        el.querySelector('#fu-mine').addEventListener('change', function () {
+          state.mine = this.checked;
+          if (state.data) render();
+        });
+        listEl.addEventListener('click', function (e) {
+          var row = e.target.closest('.ev-row');
+          if (row) openDetail(row.getAttribute('data-id'));
+        });
+        if (canManage) {
+          el.querySelector('#fu-add').addEventListener('click', function () {
+            var form = document.createElement('form');
+            form.className = 'form-grid';
+            form.innerHTML = basicFields({}) + App.field('負責人', ownerSelect('', state.data ? state.data.owners : [])) +
+              App.field('下次追蹤日', '<input type="date" name="nextDate">') + '<button type="submit" hidden></button>';
+            App.modal.open({
+              title: '新增追蹤',
+              body: form,
+              actions: [
+                { label: '取消', value: null },
+                {
+                  label: '新增', value: 'ok', cls: 'btn-primary', primary: true, validate: function () {
+                    if (App.formValues(form).name) return true;
+                    App.toast('請填寫姓名', 'error');
+                    return false;
+                  }
+                }
+              ]
+            }).then(function (v) {
+              if (v !== 'ok') return;
+              return App.api('followup.create', App.formValues(form)).then(function (l) {
+                App.toast('已新增 ' + l.name);
+                load();
+              });
+            }).catch(App.handleError);
+          });
+        }
+        load();
+      }
+    });
+  })();
+</script>

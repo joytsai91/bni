@@ -53,6 +53,9 @@ function homeData_(d, ctx) {
   if (hasPermission(ctx.perms, 'members.member.view')) {
     cards.expiring = { days: s.expiryNoticeDays, members: expiringMembers_(today, s.expiryNoticeDays).slice(0, 8) };
   }
+  if (hasPermission(ctx.perms, 'followup.lead.view')) {
+    cards.followups = myFollowups_(ctx);
+  }
   return {
     today: today,
     now: now,

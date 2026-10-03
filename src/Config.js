@@ -69,6 +69,12 @@ const ROLES = [
 
 const EVENT_TYPES = ['例會', '共識會議', '培訓', '聯誼', '商務簡報', '其他'];
 
+/** 來賓追蹤階段：前四個是進行中，後兩個是結案 */
+const LEAD_STAGES = ['新來賓', '已聯繫', '有意願', '申請中', '已入會', '暫不考慮'];
+const LEAD_ACTIVE_STAGES = ['新來賓', '已聯繫', '有意願', '申請中'];
+
+const TARGET_PRIORITIES = ['高', '中', '低'];
+
 function col_(key, title, type) {
   return { key: key, title: title, type: type || 'text' };
 }
@@ -156,6 +162,33 @@ function sheetDefs_() {
         col_('id', '紀錄ID'), col_('eventId', '活動ID'), col_('eventDate', '活動日期'), col_('prize', '獎項'),
         col_('winner', '得獎者'), col_('poolSize', '名單人數', 'number'), col_('drawnBy', '操作人'), col_('drawnAt', '抽獎時間'),
         deletedCol_()
+      ]
+    },
+    leads: {
+      name: '追蹤名單',
+      widths: [110, 100, 180, 120, 120, 180, 100, 100, 100, 200, 70, 80, 100, 100, 240, 80, 150, 150, 60],
+      columns: [
+        col_('id', '追蹤ID'), col_('name', '姓名'), col_('company', '公司'), col_('category', '專業別'),
+        col_('phone', '手機', 'phone'), col_('email', 'Email'), col_('inviter', '邀請人'), col_('firstVisit', '首次來訪'),
+        col_('lastVisit', '最近來訪'), col_('visitEvents', '來訪活動'), col_('visits', '來訪次數', 'number'), col_('stage', '階段'),
+        col_('owner', '負責人'), col_('nextDate', '下次追蹤日'), col_('latest', '最新進度'), col_('memberId', '會員ID'),
+        col_('createdAt', '建立時間'), col_('updatedAt', '更新時間'), deletedCol_()
+      ]
+    },
+    leadLogs: {
+      name: '追蹤紀錄',
+      widths: [110, 110, 150, 100, 80, 400, 60],
+      columns: [
+        col_('id', '紀錄ID'), col_('leadId', '追蹤ID'), col_('at', '時間'), col_('by', '記錄人'),
+        col_('stage', '階段'), col_('content', '內容'), deletedCol_()
+      ]
+    },
+    targets: {
+      name: '招募目標',
+      widths: [110, 140, 120, 70, 300, 60],
+      columns: [
+        col_('id', '目標ID'), col_('category', '專業別'), col_('industryGroup', '產業群組'), col_('priority', '優先度'),
+        col_('note', '備註'), deletedCol_()
       ]
     },
     palms: {

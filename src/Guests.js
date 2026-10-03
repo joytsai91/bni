@@ -152,9 +152,11 @@ function applyRegistrationChanges_(table, row, changes, ctx) {
   afterRegistrationChange_(row, changes, ctx);
 }
 
-/** 預留給其他模組：報名資料變更後要做的事 */
+/** 報名資料變更後的連動：來賓簽到／取消簽到 → 評議與追蹤的來訪紀錄 */
 function afterRegistrationChange_(row, changes, ctx) {
-  return;
+  if (Object.prototype.hasOwnProperty.call(changes, 'checkedInAt') && (row.role || ROLE_GUEST) === ROLE_GUEST) {
+    syncLeadVisit_(row, !!changes.checkedInAt);
+  }
 }
 
 function updateRegistration_(d, ctx) {
@@ -182,6 +184,7 @@ function deleteRegistration_(d, ctx) {
     const row = t.rows.filter(function (r) { return r.id === d.id; })[0];
     if (!row) throw new Error('找不到這筆報名，請重新整理');
     if (row.paid) applyRegistrationChanges_(t, row, paymentChanges_(row, false, ctx), ctx);
+    if (row.checkedInAt) applyRegistrationChanges_(t, row, { checkedInAt: '' }, ctx);
     Db.softDelete(t, row._row);
     return true;
   });

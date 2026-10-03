@@ -1,0 +1,158 @@
+<script>
+  /* 產業分析：產業群組分布、重複專業別、招募目標缺口、來賓專業別檢查 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    var STATUS = {
+      conflict: { label: '撞行業', cls: 'red' },
+      gap: { label: '補缺口', cls: 'green' },
+      open: { label: '可邀請', cls: 'gray' }
+    };
+
+    function kpis(a) {
+      var groupCount = a.groups.filter(function (g) { return g.group !== '未分類'; }).length;
+      return '<section class="card"><div class="stat-row" style="margin-top:0">' + [
+        ['在籍會員', a.memberCount], ['產業群組', groupCount], ['重複專業別', a.duplicates.length], ['招募缺口', a.gapCount]
+      ].map(function (k) { return '<div class="stat-box"><b>' + k[1] + '</b><span>' + k[0] + '</span></div>'; }).join('') + '</div></section>';
+    }
+
+    /** 單一數列的橫條圖：一個顏色、數值標在條尾、滑過看名單 */
+    function groupBars(a) {
+      if (!a.groups.length) return '<p class="muted">會員名冊還沒有資料</p>';
+      var max = Math.max.apply(null, a.groups.map(function (g) { return g.members.length; }));
+      return '<div class="bars">' + a.groups.map(function (g) {
+        var names = g.members.map(function (m) { return m.name + (m.category ? '（' + m.category + '）' : ''); }).join('、');
+        var pct = Math.max(4, Math.round(g.members.length / max * 100));
+        return '<div class="bar-row" title="' + esc(g.group + '：' + names) + '"><span class="bar-label">' + esc(g.group) + '</span>' +
+          '<span class="bar-track"><i style="width:calc((100% - 3em) * ' + (pct / 100) + ')"></i><b>' + g.members.length + '</b></span>' +
+          '<span class="bar-names muted small">' + esc(names) + '</span></div>';
+      }).join('') + '</div><p class="muted small" style="margin-bottom:0">在會員名冊填「產業群組」就會分類；沒填的列在「未分類」。</p>';
+    }
+
+    function duplicatesList(a) {
+      if (!a.duplicates.length) return '<p class="muted" style="margin:0">沒有重複的專業別</p>';
+      return '<ul class="list">' + a.duplicates.map(function (d) {
+        return '<li><span><span class="tag red">可能同業</span> <b>' + esc(d.a.name) + '</b>（' + esc(d.a.category) + '）與 <b>' + esc(d.b.name) + '</b>（' +
+          esc(d.b.category) + '）</span></li>';
+      }).join('') + '</ul>';
+    }
+
+    function targetsTable(a, canManage) {
+      if (!a.targets.length) return '<p class="muted" style="margin:0">還沒有招募目標：把分會想找的專業別加進來，就能看出缺口。</p>';
+      return '<div class="table-wrap"><table class="data"><thead><tr><th>優先</th><th>專業別</th><th>產業群組</th><th>狀態</th><th>可能人選</th><th>備註</th>' +
+        (canManage ? '<th></th>' : '') + '</tr></thead><tbody>' + a.targets.map(function (t) {
+          return '<tr data-id="' + esc(t.id) + '"><td>' + esc(t.priority) + '</td><td><b>' + esc(t.category) + '</b></td><td>' + esc(t.industryGroup) + '</td>' +
+            '<td>' + (t.filled ? '<span class="tag green">已補齊</span> ' + esc(t.filledBy.join('、')) : '<span class="tag red">缺口</span>') + '</td>' +
+            '<td>' + esc(t.candidates.map(function (c) { return c.name + '（' + c.stage + '）'; }).join('、') || '—') + '</td><td>' + esc(t.note) + '</td>' +
+            (canManage ? '<td><button type="button" class="btn btn-sm" data-act="edit">編輯</button> <button type="button" class="btn btn-sm btn-danger" data-act="delete">刪除</button></td>' : '') +
+            '</tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+
+    function prospectsList(a) {
+      if (!a.prospects.length) return '<p class="muted" style="margin:0">未來四週沒有來賓報名，也沒有進行中的追蹤</p>';
+      return '<ul class="list">' + a.prospects.map(function (p) {
+        var st = STATUS[p.status];
+        var why = p.status === 'conflict' ? '同業會員：' + p.conflicts.map(function (m) { return m.name + '（' + m.category + '）'; }).join('、') :
+          p.status === 'gap' ? '符合招募目標：' + p.gap : '目前沒有同業會員';
+        return '<li><span><b>' + esc(p.name) + '</b> <span class="muted small">' + esc([p.company, p.category].filter(Boolean).join('・')) + '</span>' +
+          '<br><span class="muted small">' + esc(p.source + '・' + why) + '</span></span><span class="tag ' + st.cls + '">' + st.label + '</span></li>';
+      }).join('') + '</ul>';
+    }
+
+    function targetForm(t) {
+      var form = document.createElement('form');
+      form.className = 'form-grid';
+      form.innerHTML = App.field('專業別', '<input type="text" name="category" maxlength="60" value="' + esc(t.category || '') + '">', true) +
+        App.field('產業群組', '<input type="text" name="industryGroup" maxlength="30" value="' + esc(t.industryGroup || '') + '">') +
+        App.field('優先度', '<select name="priority">' + ['高', '中', '低'].map(function (p) {
+          return '<option' + (p === (t.priority || '中') ? ' selected' : '') + '>' + p + '</option>';
+        }).join('') + '</select>') +
+        App.field('備註', '<input type="text" name="note" maxlength="200" value="' + esc(t.note || '') + '">', false, '', 'full') +
+        '<button type="submit" hidden></button>';
+      return form;
+    }
+
+    App.registerPage('industry', {
+      title: '產業分析',
+      perm: 'analysis.industry.view',
+      render: function (el) {
+        var canManage = App.can('analysis.target.manage');
+        el.innerHTML = '<div class="page-head"><div><h1>產業分析</h1><p>一業一席：看會員分布、重複專業別與招募缺口</p></div></div><div class="stack" id="in-body"></div>';
+        var body = el.querySelector('#in-body');
+        var data = null;
+
+        function render() {
+          body.innerHTML = kpis(data) +
+            '<section class="card"><div class="card-head"><h2>產業群組分布</h2><span class="muted small">在籍會員人數</span></div>' + groupBars(data) + '</section>' +
+            '<div class="grid-2"><section class="card"><div class="card-head"><h2>重複專業別</h2></div>' + duplicatesList(data) + '</section>' +
+            '<section class="card"><div class="card-head"><h2>來賓專業別檢查</h2><span class="muted small">未來四週來賓＋追蹤中</span></div>' + prospectsList(data) + '</section></div>' +
+            '<section class="card"><div class="card-head"><h2>招募目標</h2>' + (canManage ? '<button type="button" class="btn btn-primary btn-sm" id="in-add">＋ 新增目標</button>' : '') + '</div>' +
+            targetsTable(data, canManage) + '</section>';
+        }
+
+        function load() {
+          if (!data) App.skeleton(body, 8);
+          return App.api('industry.analysis').then(function (res) {
+            data = res;
+            render();
+          }).catch(function (err) {
+            App.errorState(body, err);
+            App.handleError(err);
+          });
+        }
+
+        function editTarget(t) {
+          var form = targetForm(t);
+          App.modal.open({
+            title: t.id ? '編輯招募目標' : '新增招募目標',
+            body: form,
+            actions: [
+              { label: '取消', value: null },
+              {
+                label: '儲存', value: 'ok', cls: 'btn-primary', primary: true, validate: function () {
+                  if (App.formValues(form).category) return true;
+                  App.toast('請填寫專業別', 'error');
+                  return false;
+                }
+              }
+            ]
+          }).then(function (v) {
+            if (v !== 'ok') return;
+            var d = App.formValues(form);
+            d.id = t.id || '';
+            return App.api('industry.saveTarget', d).then(function () {
+              App.toast('已儲存');
+              load();
+            });
+          }).catch(App.handleError);
+        }
+
+        body.addEventListener('click', function (e) {
+          if (e.target.closest('#in-add')) {
+            editTarget({});
+            return;
+          }
+          var btn = e.target.closest('[data-act]');
+          if (!btn || !data) return;
+          var t = data.targets.filter(function (x) { return x.id === btn.closest('tr').getAttribute('data-id'); })[0];
+          if (!t) return;
+          if (btn.getAttribute('data-act') === 'edit') {
+            editTarget(t);
+            return;
+          }
+          App.modal.confirm('刪除招募目標', '確定刪除「' + t.category + '」？', '刪除').then(function (ok) {
+            if (!ok) return;
+            return App.api('industry.deleteTarget', { id: t.id }).then(function () {
+              App.toast('已刪除');
+              load();
+            });
+          }).catch(App.handleError);
+        });
+        load();
+      }
+    });
+  })();
+</script>

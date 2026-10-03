@@ -73,6 +73,18 @@
         }).join('') + '</ul></section>';
     }
 
+    function followupsCard(card, today) {
+      if (!card) return '';
+      var body = card.leads.length ? '<ul class="list">' + card.leads.map(function (l) {
+        var due = !l.nextDate ? '<span class="tag gray">未排日期</span>' :
+          l.nextDate < today ? '<span class="tag red">逾期 ' + esc(App.shortDate(l.nextDate)) + '</span>' :
+          '<span class="tag">' + esc(App.shortDate(l.nextDate)) + '</span>';
+        return '<li><span><b>' + esc(l.name) + '</b> <span class="muted small">' + esc(l.stage + (l.category ? '・' + l.category : '')) + '</span></span>' + due + '</li>';
+      }).join('') + '</ul>' : '<p class="muted" style="margin:0">近 3 天沒有要追蹤的來賓</p>';
+      return '<section class="card"><div class="card-head"><h2>我的追蹤' + (card.total ? '（' + card.total + '）' : '') + '</h2>' +
+        (App.allowed('followup') ? '<button type="button" class="card-link" data-go="followup">評議與追蹤</button>' : '') + '</div>' + body + '</section>';
+    }
+
     function showDetail(e) {
       var rows = [
         ['日期', e.dateLabel], ['時間', e.timeLabel || '未定'], ['地點', e.place || '未定'], ['類型', e.type],
@@ -110,6 +122,7 @@
           var parts = [weekCard(data, selected)];
           if (data.nextMeeting) parts.push(eventCard(data.nextMeeting, '例會', data.today));
           if (data.nextEvent) parts.push(eventCard(data.nextEvent, data.nextEvent.type, data.today));
+          parts.push(followupsCard(data.cards.followups, data.today));
           parts.push(expiringCard(data.cards.expiring));
           body.innerHTML = parts.join('');
         }

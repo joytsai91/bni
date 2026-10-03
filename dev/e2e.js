@@ -118,7 +118,7 @@ async function main() {
     assert.equal(await page.locator('.week button').count(), 7);
     assert.match(await page.textContent('#home-body'), /共識會議/);
     assert.match(await page.textContent('#top-title'), /示範分會/);
-    assert.deepEqual(await navItems(page), ['home', 'events', 'dashboard', 'guests', 'checkin', 'showcase', 'wheel', 'palms', 'settings']);
+    assert.deepEqual(await navItems(page), ['home', 'events', 'dashboard', 'guests', 'checkin', 'showcase', 'wheel', 'followup', 'industry', 'palms', 'settings']);
     await shot(page, '03-home-desktop', true);
     step('登入（錯誤密碼擋下）與首頁（這一週、下一場例會與活動）');
 
@@ -243,6 +243,38 @@ async function main() {
     await page.waitForFunction(() => document.querySelectorAll('#wh-history li').length === 1);
     assert.equal(await page.textContent('#wh-count'), '名單 1 人');
     step('幸運轉盤（到場會員抽獎、紀錄、抽過的人移出名單）');
+
+    // 9. 評議與追蹤：簽到的來賓自動加入、改階段與紀錄、轉為會員
+    await goTo(page, 'followup');
+    await page.waitForSelector('#fu-list .ev-row');
+    assert.equal(await page.locator('#fu-list .ev-row').count(), 2, '簽到過的兩位來賓自動加入追蹤');
+    await page.click('#fu-list .ev-row:has-text("周品妤")');
+    await page.waitForSelector('#modal select[name=stage]');
+    await page.selectOption('#modal select[name=stage]', '已聯繫');
+    await page.fill('#modal [name=nextDate]', '2026-10-10');
+    await page.fill('#modal [name=note]', '已電話聯繫，約下週一對一');
+    await page.click('#modal .btn-primary');
+    await page.waitForFunction(() => /最新進度：已電話聯繫/.test(document.querySelector('#fu-list').textContent));
+    await shot(page, '16-followup', true);
+    await page.click('#fu-list .ev-row:has-text("現場來賓甲")');
+    await page.waitForSelector('#modal select[name=stage]');
+    await page.click('#modal .modal-actions >> text=轉為會員');
+    await page.click('#modal .btn-primary');
+    await page.waitForFunction(() => /已入會/.test(document.querySelector('#fu-filter').textContent) && !/現場來賓甲/.test(document.querySelector('#fu-list').textContent));
+    assert.ok((await page.evaluate(() => App.session.members.map((m) => m.name))).includes('現場來賓甲'), '轉為會員後出現在會員名單');
+    step('評議與追蹤（簽到自動加入、改階段與紀錄、轉為會員）');
+
+    // 10. 產業分析：產業群組分布、新增招募目標、來賓檢查
+    await goTo(page, 'industry');
+    await page.waitForSelector('.bar-row');
+    assert.ok(await page.locator('.bar-row').count() >= 8);
+    await page.click('#in-add');
+    await page.fill('#modal [name=category]', '牙醫');
+    await page.click('#modal .btn-primary');
+    await page.waitForFunction(() => /蔡宜君/.test((document.querySelector('#in-body table') || {}).textContent || ''));
+    assert.match(await page.textContent('#in-body'), /可邀請/);
+    await shot(page, '17-industry', true);
+    step('產業分析（群組分布、招募目標、來賓專業別檢查）');
 
     // 5. 活動來賓：名單、個人邀請連結、活動代為登記會員、惡意字串不會被當成 HTML
     gas.api('public.register', { eventId: MTG, name: '<img src=x onerror="window.__xss=1">', category: '測試' });

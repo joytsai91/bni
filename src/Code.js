@@ -100,6 +100,16 @@ function apiRoutes_() {
     'meeting.wheelRecord': { perm: 'meeting.wheel.use', run: recordWheel_ },
     'meeting.wheelDelete': { perm: 'meeting.wheel.use', run: deleteWheelRecord_ },
 
+    'followup.list': { perm: 'followup.lead.view', run: listLeads_ },
+    'followup.get': { perm: 'followup.lead.view', run: getLead_ },
+    'followup.create': { perm: 'followup.lead.manage', run: createLead_ },
+    'followup.update': { perm: 'followup.lead.manage', run: updateLead_ },
+    'followup.convert': { perm: 'followup.lead.manage', run: convertLead_ },
+    'followup.delete': { perm: 'followup.lead.manage', run: deleteLead_ },
+    'industry.analysis': { perm: 'analysis.industry.view', run: industryAnalysis_ },
+    'industry.saveTarget': { perm: 'analysis.target.manage', run: saveTarget_ },
+    'industry.deleteTarget': { perm: 'analysis.target.manage', run: deleteTarget_ },
+
     'palms.preview': { perm: 'palms.report.manage', run: previewPalms_ },
     'palms.save': { perm: 'palms.report.manage', run: savePalms_ },
     'palms.periods': { perm: 'palms.report.view', run: listPalmsPeriods_ },

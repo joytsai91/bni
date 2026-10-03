@@ -407,3 +407,91 @@ test('來賓速覽與幸運轉盤：來訪次數、同業會員、抽獎名單�
   assert.match(s.api('meeting.wheel', { eventId: MTG }, cara).error, /權限/);
   assert.equal(s.api('events.page', {}, cara).data.events[0].counts.guests, 2, '財務可以看活動來賓人數');
 });
+
+test('評議與追蹤：簽到自動建立、來訪累計與取消、階段紀錄、轉會員、我的待辦、權限', () => {
+  const s = setup();
+  addMembersByHand(s);
+  const me = s.admin('app.bootstrap').account;
+  s.admin('accounts.update', { id: me.id, displayName: 'Joy', roles: ['系統管理員'], memberId: 'M001' });
+
+  s.setNow('2026-10-01T07:30:00+08:00');
+  const r1 = s.api('public.register', { eventId: 'MTG-2026-10-01', name: '潛力來賓', company: 'A公司', category: '律師', phone: '0955000111', inviter: '王小明' }).data.registration;
+  s.admin('registrations.update', { id: r1.id, patch: { checkedIn: true } });
+  let list = s.admin('followup.list');
+  assert.equal(list.me, '王小明');
+  assert.deepEqual(list.leads.map((l) => [l.name, l.stage, l.visits, l.owner, l.firstVisit]), [['潛力來賓', '新來賓', 1, '王小明', '2026-10-01']]);
+
+  s.setNow('2026-10-08T06:50:00+08:00');
+  const r2 = s.api('public.register', { eventId: MTG, name: '潛力 來賓', category: '律師', phone: '0955-000-111', inviter: '王小明' }).data.registration;
+  s.admin('registrations.update', { id: r2.id, patch: { checkedIn: true } });
+  assert.deepEqual([s.admin('followup.list').leads[0].visits, s.admin('followup.list').leads[0].lastVisit], [2, '2026-10-08']);
+  s.admin('registrations.update', { id: r2.id, patch: { checkedIn: false } });
+  assert.equal(s.admin('followup.list').leads[0].visits, 1);
+  s.admin('registrations.update', { id: r2.id, patch: { checkedIn: true } });
+  assert.equal(s.admin('followup.list').leads[0].visits, 2);
+
+  const walk = s.admin('registrations.walkin', { eventId: MTG, name: '路過來賓', category: '餐飲' }).registration;
+  assert.equal(s.admin('followup.list').leads.length, 2);
+  s.admin('registrations.update', { id: walk.id, patch: { checkedIn: false } });
+  assert.equal(s.admin('followup.list').leads.length, 1, '只靠這場建立的新追蹤，取消簽到就刪除');
+  assert.equal(rowsOf(s, '追蹤名單').find((r) => r['姓名'] === '路過來賓')['已刪除'], '是');
+
+  const lead = s.admin('followup.list').leads[0];
+  s.admin('followup.update', { id: lead.id, stage: '有意願', note: '電話聯繫，下週約一對一', nextDate: '2026-10-09' });
+  const detail = s.admin('followup.get', { id: lead.id });
+  assert.deepEqual([detail.lead.stage, detail.lead.latest, detail.lead.nextDate], ['有意願', '電話聯繫，下週約一對一', '2026-10-09']);
+  assert.deepEqual(detail.logs.map((l) => l.content).slice(0, 2), ['電話聯繫，下週約一對一', '階段：新來賓 → 有意願']);
+  assert.ok(detail.logs.some((l) => l.content === '第一次來訪：2026-10-01'));
+  assert.match(s.api('followup.update', { id: lead.id, stage: '亂填' }, s.token).error, /不正確的階段/);
+
+  const home = s.admin('home.data');
+  assert.deepEqual([home.cards.followups.me, home.cards.followups.total, home.cards.followups.leads[0].name], ['王小明', 1, '潛力來賓']);
+  s.setNow('2026-10-10T09:00:00+08:00');
+  assert.equal(s.admin('followup.list').leads[0].overdue, true);
+
+  const conv = s.admin('followup.convert', { id: lead.id });
+  assert.deepEqual([conv.member.id, conv.member.sponsor, conv.member.joinDate, conv.lead.stage], ['M005', '王小明', '2026-10-10', '已入會']);
+  assert.match(s.api('followup.convert', { id: lead.id }, s.token).error, /已經轉為會員/);
+
+  const manual = s.admin('followup.create', { name: '介紹人選', category: '牙醫', inviter: '陳大華' });
+  assert.deepEqual([manual.owner, manual.visits, manual.stage], ['陳大華', 0, '新來賓']);
+  assert.match(s.api('followup.create', { name: '介紹人選' }, s.token).error, /已經在追蹤名單/);
+  s.admin('followup.delete', { id: manual.id });
+  assert.ok(!s.admin('followup.list').leads.some((l) => l.id === manual.id));
+
+  s.admin('accounts.create', { username: 'amy', displayName: 'Amy', roles: '來賓接待', password: 'amy-pass-123' });
+  s.admin('accounts.create', { username: 'mike', displayName: 'Mike', roles: '會員委員會', password: 'mike-pass-123' });
+  assert.match(s.api('followup.list', {}, s.login('amy', 'amy-pass-123')).error, /權限/);
+  const mike = s.login('mike', 'mike-pass-123');
+  assert.equal(s.api('followup.update', { id: lead.id, note: '委員會面談完成' }, mike).ok, true);
+  assert.equal(s.api('industry.analysis', {}, mike).ok, true);
+});
+
+test('產業分析：產業群組、重複專業別、招募目標缺口、來賓撞行業', () => {
+  const s = setup();
+  s.admin('members.save', { name: '王小明', category: '室內設計', industryGroup: '建築居家' });
+  s.admin('members.save', { name: '陳大華', category: '保險規劃', industryGroup: '金融保險' });
+  s.admin('members.save', { name: '林美麗', category: '室內設計師' });
+  s.admin('members.save', { name: '張志強', category: '律師', industryGroup: '專業服務' });
+  s.admin('industry.saveTarget', { category: '會計師', priority: '高' });
+  const lawyer = s.admin('industry.saveTarget', { category: '律師', priority: '中' });
+  assert.match(s.api('industry.saveTarget', { category: ' 會計師 ' }, s.token).error, /已經有/);
+  s.api('public.register', { eventId: MTG, name: '撞業來賓', category: '保險' });
+  s.api('public.register', { eventId: MTG, name: '補位來賓', category: '會計' });
+  s.api('public.register', { eventId: MTG, name: '一般來賓', category: '花藝' });
+
+  const a = s.admin('industry.analysis');
+  assert.equal(a.memberCount, 4);
+  assert.deepEqual(a.groups.map((g) => [g.group, g.members.length]), [['建築居家', 1], ['金融保險', 1], ['專業服務', 1], ['未分類', 1]]);
+  assert.deepEqual(a.duplicates.map((d) => [d.a.name, d.b.name]), [['王小明', '林美麗']]);
+  assert.deepEqual(a.targets.map((t) => [t.category, t.filled, t.filledBy]), [['會計師', false, []], ['律師', true, ['張志強']]]);
+  assert.equal(a.gapCount, 1);
+  const status = Object.fromEntries(a.prospects.map((p) => [p.name, p.status]));
+  assert.deepEqual(status, { 撞業來賓: 'conflict', 補位來賓: 'gap', 一般來賓: 'open' });
+  assert.deepEqual(a.prospects.find((p) => p.name === '撞業來賓').conflicts, [{ name: '陳大華', category: '保險規劃' }]);
+  assert.match(a.prospects[0].source, /10\/8 例會/);
+  s.admin('members.save', { name: '一般來賓', category: '花藝' });
+  assert.ok(!s.admin('industry.analysis').prospects.some((p) => p.name === '一般來賓'), '已經是會員就不列入來賓檢查');
+  s.admin('industry.deleteTarget', { id: lawyer.id });
+  assert.deepEqual(s.admin('industry.analysis').targets.map((t) => t.category), ['會計師']);
+});
