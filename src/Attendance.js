@@ -107,6 +107,12 @@ function markUncheckedAbsent_(d) {
   });
 }
 
+/** 出席結果文字（簽到頁「出席結果文字」、LINE 小助理共用） */
+function attendanceText_(d) {
+  const board = checkinBoard_({ eventId: requireMeeting_(d.eventId).id });
+  return buildAttendanceText(getSettings_().chapterName, board.event.dateLabel, board.members, board.registrations);
+}
+
 /** 列印用：活動資訊、分會設定、在籍會員（例會才需要）與報名名單 */
 function printData_(d) {
   const event = getEvent_(d.eventId);

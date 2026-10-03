@@ -354,6 +354,32 @@
   .btn-xl { font-size: 1.2rem; padding: 14px 36px; border-radius: 14px; }
   .winner { font-size: 2.4rem; font-weight: 900; text-align: center; margin: 8px 0; }
 
+  /* ---------- 財務中心 ---------- */
+  table.data tr.dim td.keep { text-decoration: none; }
+  table.data tr.clickable { cursor: pointer; }
+  table.data tr.clickable:hover td { background: #f9fafb; }
+  table.dues th, table.dues td { text-align: center; padding: 6px 4px; }
+  table.dues th:first-child, table.dues td:first-child { text-align: left; position: sticky; left: 0; background: #fff; z-index: 1; padding-left: 10px; }
+  table.dues th:first-child { background: #f9fafb; z-index: 2; }
+  table.dues tr.total td { background: #f9fafb; font-size: .85rem; }
+  .dues-cell button { border: 0; background: none; cursor: pointer; padding: 6px 4px; border-radius: 6px; min-width: 2.8em; color: var(--muted); }
+  .dues-cell button:hover { background: var(--primary-soft); color: var(--primary); }
+  .dues-cell.paid button { color: var(--st-P); font-weight: 900; font-size: 1.05rem; }
+  .dues-cell.due, .dues-cell.due button { color: var(--brand); font-weight: 600; font-size: .85rem; }
+  .dues-cell.na { color: #9ca3af; }
+
+  /* ---------- 信件與 LINE ---------- */
+  .field-chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .chip-btn { border: 1px dashed #b9c8f0; background: var(--primary-soft); color: var(--primary); border-radius: 8px; padding: 3px 8px; font-size: .82rem; cursor: pointer; }
+  .tpl-preview { white-space: pre-wrap; color: var(--muted); max-height: 4.6em; overflow: hidden; }
+  .mail-sample { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; background: #fafafa; }
+  .mail-subject { font-weight: 800; margin: 6px 0; }
+  .mail-text { white-space: pre-wrap; font-size: .95rem; margin: 0; font-family: inherit; }
+  .push-preview { max-height: 220px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #fafafa; }
+  .bind-code { font-size: 2rem; font-weight: 900; letter-spacing: .12em; font-variant-numeric: tabular-nums; }
+  details > summary { cursor: pointer; font-weight: 600; margin: 10px 0 4px; }
+  #ln-text, #ml-text { width: 100%; }
+
   @media (max-width: 640px) {
     .content { padding: 12px 12px 96px; }
     .hello h1 { font-size: 1.75rem; }

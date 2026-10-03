@@ -85,6 +85,17 @@
         (App.allowed('followup') ? '<button type="button" class="card-link" data-go="followup">評議與追蹤</button>' : '') + '</div>' + body + '</section>';
     }
 
+    function financeCard(card) {
+      if (!card) return '';
+      var boxes = [['目前餘額', App.money(card.balance)], ['本月收入', App.money(card.income)], ['本月支出', App.money(card.expense)]];
+      if (card.duesUnpaid !== null) boxes.push(['本月未繳月費', card.duesUnpaid + ' 人']);
+      return '<section class="card"><div class="card-head"><h2>財務</h2>' +
+        (App.allowed('finance') ? '<button type="button" class="card-link" data-go="finance">財務中心</button>' : '') + '</div>' +
+        '<div class="stat-row" style="margin-top:0">' + boxes.map(function (b) {
+          return '<div class="stat-box"><b>' + esc(b[1]) + '</b><span>' + esc(b[0]) + '</span></div>';
+        }).join('') + '</div></section>';
+    }
+
     function showDetail(e) {
       var rows = [
         ['日期', e.dateLabel], ['時間', e.timeLabel || '未定'], ['地點', e.place || '未定'], ['類型', e.type],
@@ -124,6 +135,7 @@
           if (data.nextEvent) parts.push(eventCard(data.nextEvent, data.nextEvent.type, data.today));
           parts.push(followupsCard(data.cards.followups, data.today));
           parts.push(expiringCard(data.cards.expiring));
+          parts.push(financeCard(data.cards.finance));
           body.innerHTML = parts.join('');
         }
 

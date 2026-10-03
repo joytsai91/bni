@@ -18,9 +18,9 @@ const MEMBERS = [
 ];
 
 const GUESTS = [
-  ['周品妤', '品妤手作烘焙坊', '手工烘焙', '王小明'],
-  ['Kevin Lin', 'KL Design Studio', '平面設計', '吳淑芬'],
-  ['歐陽俊宏', '俊宏國際物流股份有限公司台中分公司', '國際物流', '陳大華']
+  ['周品妤', '品妤手作烘焙坊', '手工烘焙', '王小明', 'pinyu@example.com'],
+  ['Kevin Lin', 'KL Design Studio', '平面設計', '吳淑芬', 'kevin@example.com'],
+  ['歐陽俊宏', '俊宏國際物流股份有限公司台中分公司', '國際物流', '陳大華', '']
 ];
 
 const ADMIN = { username: 'admin', password: 'demo-pass-123', displayName: 'Joy', title: '主席', roles: '系統管理員' };
@@ -32,6 +32,11 @@ function addDays(iso, days) {
   return d.toISOString().slice(0, 10);
 }
 
+function addMonths(month, n) {
+  const total = Number(month.slice(0, 4)) * 12 + Number(month.slice(5, 7)) - 1 + n;
+  return Math.floor(total / 12) + '-' + String(total % 12 + 1).padStart(2, '0');
+}
+
 function seed(gas) {
   const ok = (res) => {
     if (!res.ok) throw new Error(res.error);
@@ -41,17 +46,18 @@ function seed(gas) {
   const token = gas.login(ADMIN.username, ADMIN.password);
   ok(gas.api('settings.save', {
     systemName: '示範管理系統', chapterName: 'BNI 示範分會', meetingWeekday: '四', meetingTime: '07:00', meetingEndTime: '09:00',
-    lateAfter: '07:00', meetingPlace: '台北市信義區示範會館 3F', guestFee: '500', monthlyDues: '1500'
+    lateAfter: '07:00', meetingPlace: '台北市信義區示範會館 3F', guestFee: '500', monthlyDues: '1500', openingBalance: '20000'
   }, token));
   ok(gas.api('members.list', {}, token)); // 建立會員名單工作表
   const sheet = gas.ss.getSheetByName('會員名單');
-  MEMBERS.forEach(([name, company, category, group, position, phone, expiry]) => {
-    sheet.typeRow(['', name, company, category, group, position, phone ? "'" + phone : '', '', '', '', "'" + expiry, '', '在籍']);
+  MEMBERS.forEach(([name, company, category, group, position, phone, expiry], i) => {
+    const email = 'member' + String(i + 1).padStart(2, '0') + '@example.com';
+    sheet.typeRow(['', name, company, category, group, position, phone ? "'" + phone : '', email, '', '', "'" + expiry, '', '在籍']);
   });
   ok(gas.api('accounts.create', Object.assign({}, STAFF, { roles: [STAFF.roles] }), token));
   const meeting = ok(gas.api('home.data', {}, token)).nextMeeting;
-  GUESTS.forEach(([name, company, category, inviter], i) => {
-    ok(gas.api('public.register', { eventId: meeting.id, name, company, category, inviter, phone: '092' + String(1234567 + i) }));
+  GUESTS.forEach(([name, company, category, inviter, email], i) => {
+    ok(gas.api('public.register', { eventId: meeting.id, name, company, category, inviter, email, phone: '092' + String(1234567 + i) }));
   });
   ok(gas.api('events.save', {
     type: '共識會議', name: '共識會議', date: addDays(meeting.date, 8), startTime: '06:30', endTime: '09:00', place: '暮溢共享空間',
@@ -62,6 +68,19 @@ function seed(gas) {
     startTime: '18:00', endTime: '21:00', place: '河濱公園', openRegistration: true, fee: '600', capacity: '40',
     description: '歡迎攜伴參加'
   }, token));
+  // 財務：前 9 位會員一次繳了前兩個月月費，其中 7 位這個月也繳了；加上兩個月的場地費、餐費
+  const today = ok(gas.api('app.bootstrap', {}, token)).today;
+  const month = today.slice(0, 7);
+  MEMBERS.slice(0, 9).forEach((m, i) => {
+    const memberId = 'M' + String(i + 1).padStart(3, '0');
+    ok(gas.api('finance.payDues', { memberId, months: [addMonths(month, -2), addMonths(month, -1)], paidDate: addMonths(month, -2) + '-0' + (i + 1) }, token));
+    if (i < 7) ok(gas.api('finance.payDues', { memberId, months: [month], paidDate: today }, token));
+  });
+  [-1, 0].forEach((n) => {
+    const m = addMonths(month, n);
+    ok(gas.api('finance.create', { type: '支出', date: m + '-01', category: '場地費', amount: '12000', party: '示範會館', note: '例會場地' }, token));
+    ok(gas.api('finance.create', { type: '支出', date: m + '-02', category: '餐費', amount: '3600', party: '早餐店', note: '例會早餐' }, token));
+  });
   return { admin: ADMIN, staff: STAFF, token, meetingId: meeting.id, partyId: party.id };
 }
 

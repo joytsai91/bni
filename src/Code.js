@@ -4,6 +4,7 @@
  * 網頁：
  *   /exec                 管理系統（需要登入，功能依帳號角色顯示）
  *   /exec?page=register   報名頁（公開；可帶 &event=活動ID、&inviter=會員姓名）
+ *   POST /exec            LINE 機器人 Webhook（doPost，在 Line.js）
  *
  * 注意：Apps Script 裡名稱不是底線結尾的函式，網頁訪客都能透過 google.script.run 呼叫。
  * 會讀寫資料的函式一律以底線結尾，網頁只走 apiCall（在這裡驗證登入與權限）；
@@ -94,6 +95,7 @@ function apiRoutes_() {
     'checkin.board': { perm: ['checkin.attendance.manage', 'checkin.print.view'], run: checkinBoard_ },
     'checkin.member': { perm: 'checkin.attendance.manage', run: setMemberStatus_ },
     'checkin.markAbsent': { perm: 'checkin.attendance.manage', run: markUncheckedAbsent_ },
+    'checkin.attendanceText': { perm: ['checkin.attendance.manage', 'checkin.print.view', 'line.message.send'], run: attendanceText_ },
     'print.data': { perm: 'checkin.print.view', run: printData_ },
     'meeting.showcase': { perm: 'meeting.showcase.view', run: showcaseData_ },
     'meeting.wheel': { perm: 'meeting.wheel.use', run: wheelData_ },
@@ -120,6 +122,31 @@ function apiRoutes_() {
     'members.list': { perm: 'members.member.view', run: function (d) { return listMembers_(!!d.includeInactive); } },
     'members.save': { perm: 'members.member.manage', run: saveMember_ },
     'members.delete': { perm: 'members.member.manage', run: deleteMember_ },
+
+    'finance.page': { perm: 'finance.ledger.view', run: financePage_ },
+    'finance.create': { perm: 'finance.ledger.manage', run: createLedger_ },
+    'finance.void': { perm: 'finance.ledger.manage', run: voidLedger_ },
+    'finance.dues': { perm: ['finance.ledger.view', 'finance.dues.manage'], run: duesPage_ },
+    'finance.payDues': { perm: 'finance.dues.manage', run: payDues_ },
+    'finance.voidDues': { perm: 'finance.dues.manage', run: voidDues_ },
+
+    'messages.templates': { perm: ['messages.email.send', 'messages.template.manage', 'line.message.send'], run: listTemplates_ },
+    'messages.saveTemplate': { perm: 'messages.template.manage', run: saveTemplate_ },
+    'messages.deleteTemplate': { perm: 'messages.template.manage', run: deleteTemplate_ },
+    'messages.log': { perm: ['messages.email.send', 'line.message.send'], run: listSendLog_ },
+    'mail.page': { perm: ['messages.email.send', 'messages.template.manage'], run: mailPage_ },
+    'mail.preview': { perm: 'messages.email.send', run: previewEmail_ },
+    'mail.send': { perm: 'messages.email.send', run: sendEmail_ },
+
+    'line.page': { perm: ['line.message.send', 'line.bot.manage'], run: linePage_ },
+    'line.compose': { perm: 'line.message.send', run: lineCompose_ },
+    'line.send': { perm: 'line.message.send', run: sendLine_ },
+    'line.quota': { perm: ['line.message.send', 'line.bot.manage'], run: lineQuota_ },
+    'line.settings': { perm: 'line.bot.manage', run: lineSettings_ },
+    'line.saveToken': { perm: 'line.bot.manage', run: saveLineToken_ },
+    'line.bind': { perm: 'line.bot.manage', run: startLineBinding_ },
+    'line.unbind': { perm: 'line.bot.manage', run: removeLineGroup_ },
+    'line.cron': { perm: 'line.bot.manage', run: setCron_ },
 
     'settings.get': { perm: 'system.settings.manage', run: settingsPage_ },
     'settings.save': { perm: 'system.settings.manage', run: saveSettings_ },

@@ -80,7 +80,11 @@
           checkinEl.querySelector('#ck-refresh').addEventListener('click', loadBoard);
           if (e.isMeeting) {
             checkinEl.querySelector('#ck-text').addEventListener('click', function () {
-              if (state.board) App.modal.showText('出席結果', attendanceText());
+              App.withButton(this, function () {
+                return App.api('checkin.attendanceText', { eventId: state.event.id }).then(function (text) {
+                  App.modal.showText('出席結果', text);
+                });
+              }).catch(App.handleError);
             });
             checkinEl.querySelector('#ck-absent').addEventListener('click', markAbsent);
             checkinEl.querySelector('#ck-members').addEventListener('click', onMemberClick);
@@ -209,28 +213,6 @@
               loadBoard();
             });
           }).catch(App.handleError);
-        }
-
-        function attendanceText() {
-          var b = state.board;
-          var c = counts();
-          var names = { L: [], S: [], M: [], A: [], none: [] };
-          b.members.forEach(function (m) {
-            var k = m.status || 'none';
-            if (names[k]) names[k].push(m.status === 'S' && m.substitute ? m.name + '（代理人：' + m.substitute + '）' : m.name);
-          });
-          var lines = [
-            '【' + App.session.settings.chapterName + '】' + App.dateLabel(b.event.date) + ' 出席結果',
-            '會員 ' + b.members.length + ' 位：出席 ' + c.P + '、遲到 ' + c.L + '、代理 ' + c.S + '、病假 ' + c.M + '、缺席 ' + c.A +
-              (c.none ? '、未簽到 ' + c.none : '')
-          ];
-          [['L', '遲到'], ['S', '代理'], ['M', '病假'], ['A', '缺席'], ['none', '未簽到']].forEach(function (x) {
-            if (names[x[0]].length) lines.push(x[1] + '：' + names[x[0]].join('、'));
-          });
-          var arrived = b.registrations.filter(function (g) { return g.checkedInAt; });
-          lines.push('來賓 ' + b.registrations.length + ' 位，到場 ' + arrived.length + ' 位' +
-            (arrived.length ? '：' + arrived.map(function (g) { return g.name; }).join('、') : ''));
-          return lines.join('\n');
         }
 
         function openWalkin() {

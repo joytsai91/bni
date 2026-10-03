@@ -1,0 +1,339 @@
+<script>
+  /*
+   * 信件管理：選範本寫信 → 選收件人 → 預覽 → 寄出（用部署者的 Gmail）；Email 範本；寄信紀錄。
+   * App.fieldChips、App.templateManager、App.sendLogTable 也給 LINE 小助理用。
+   */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    /** 欄位小按鈕：點一下把 {{欄位}} 插到輸入框游標的位置 */
+    App.fieldChips = function (container, fields, getTarget) {
+      container.innerHTML = '<div class="field-chips"><span class="muted small">插入欄位：</span>' + fields.map(function (f) {
+        return '<button type="button" class="chip-btn" data-field="' + esc(f) + '">' + esc(f) + '</button>';
+      }).join('') + '</div>';
+      container.addEventListener('mousedown', function (e) {
+        if (e.target.closest('[data-field]')) e.preventDefault(); // 不要搶走輸入框的焦點
+      });
+      container.addEventListener('click', function (e) {
+        var b = e.target.closest('[data-field]');
+        var target = b && getTarget();
+        if (!target) return;
+        var text = '{{' + b.getAttribute('data-field') + '}}';
+        var start = typeof target.selectionStart === 'number' ? target.selectionStart : target.value.length;
+        var end = typeof target.selectionEnd === 'number' ? target.selectionEnd : start;
+        target.value = target.value.slice(0, start) + text + target.value.slice(end);
+        target.focus();
+        target.setSelectionRange(start + text.length, start + text.length);
+        target.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    };
+
+    /** 記住表單裡最後聚焦的文字欄位，欄位小按鈕插入到那裡 */
+    function lastFocused(form, fallback) {
+      var last = fallback;
+      form.addEventListener('focusin', function (e) {
+        if (e.target.matches('input[type=text], textarea')) last = e.target;
+      });
+      return function () { return last; };
+    }
+
+    /** 範本管理（Email、LINE 共用）：清單、新增、編輯、刪除 */
+    App.templateManager = function (el, channel, onChange) {
+      var state = { list: null, fields: [] };
+
+      function render() {
+        el.innerHTML = '<div class="section-head"><p class="muted" style="margin:0">內容可以放 {{姓名}}、{{活動日期}} 等欄位，發送時自動換成資料</p>' +
+          '<button type="button" class="btn btn-primary btn-sm" data-act="add">＋ 新增範本</button></div>' +
+          (state.list.length ? '<div class="ev-list" style="margin-top:12px">' + state.list.map(function (t) {
+            return '<button type="button" class="ev-row" data-id="' + esc(t.id) + '"><div class="ev-main"><div class="ev-name">' + esc(t.name) + '</div>' +
+              (t.subject ? '<div class="ev-meta">主旨：' + esc(t.subject) + '</div>' : '') + '<div class="ev-counts tpl-preview">' + esc(t.body) + '</div></div></button>';
+          }).join('') + '</div>' : '<p class="empty">還沒有範本</p>');
+      }
+
+      function load() {
+        App.skeleton(el, 5);
+        return App.api('messages.templates', { channel: channel }).then(function (res) {
+          state.list = res.templates;
+          state.fields = res.fields;
+          render();
+        }).catch(function (err) {
+          App.errorState(el, err);
+          App.handleError(err);
+        });
+      }
+
+      function changed(msg) {
+        App.toast(msg);
+        load();
+        if (onChange) onChange();
+      }
+
+      function edit(t) {
+        var isEmail = channel === 'Email';
+        var form = document.createElement('form');
+        form.className = 'form-grid';
+        form.innerHTML = App.field('名稱', '<input type="text" name="name" maxlength="40" value="' + esc(t.name || '') + '">', true) +
+          (isEmail ? App.field('主旨', '<input type="text" name="subject" maxlength="150" value="' + esc(t.subject || '') + '">', true, '', 'full') : '') +
+          App.field('內容', '<textarea name="body" rows="9" maxlength="5000">' + esc(t.body || '') + '</textarea>', true, '', 'full') +
+          '<div class="full" data-chips></div><button type="submit" hidden></button>';
+        App.fieldChips(form.querySelector('[data-chips]'), state.fields, lastFocused(form, form.querySelector('textarea')));
+        var actions = [{ label: '取消', value: null }];
+        if (t.id) actions.push({ label: '刪除', value: 'delete', cls: 'btn-danger' });
+        actions.push({
+          label: '儲存', value: 'save', cls: 'btn-primary', primary: true, validate: function () {
+            var v = App.formValues(form);
+            if (v.name && v.body && (!isEmail || v.subject)) return true;
+            App.toast('請填寫名稱' + (isEmail ? '、主旨' : '') + '和內容', 'error');
+            return false;
+          }
+        });
+        App.modal.open({ title: t.id ? '編輯範本' : '新增 ' + channel + ' 範本', body: form, actions: actions }).then(function (v) {
+          if (v === 'save') {
+            var data = App.formValues(form);
+            data.id = t.id || '';
+            data.channel = channel;
+            return App.api('messages.saveTemplate', data).then(function () { changed('已儲存範本'); });
+          }
+          if (v === 'delete') {
+            return App.modal.confirm('刪除範本', '確定刪除「' + t.name + '」？（資料仍保留在試算表）', '刪除').then(function (ok) {
+              if (!ok) return;
+              return App.api('messages.deleteTemplate', { id: t.id }).then(function () { changed('已刪除範本'); });
+            });
+          }
+        }).catch(App.handleError);
+      }
+
+      el.addEventListener('click', function (e) {
+        if (e.target.closest('[data-act=add]')) {
+          edit({});
+          return;
+        }
+        var row = e.target.closest('.ev-row');
+        if (!row || !state.list) return;
+        var t = state.list.filter(function (x) { return x.id === row.getAttribute('data-id'); })[0];
+        if (t) edit(t);
+      });
+      load();
+    };
+
+    /** 發送紀錄表（Email、LINE 共用） */
+    App.sendLogTable = function (el, channel) {
+      var isLine = channel === 'LINE';
+      App.skeleton(el, 5);
+      return App.api('messages.log', { channel: channel }).then(function (rows) {
+        if (!rows.length) {
+          App.emptyState(el, '還沒有發送紀錄');
+          return;
+        }
+        el.innerHTML = '<div class="table-wrap"><table class="data"><thead><tr><th>時間</th><th>' + (isLine ? '群組' : '收件人') + '</th>' +
+          (isLine ? '' : '<th>信箱</th>') + '<th>' + (isLine ? '內容' : '主旨') + '</th><th>範本</th><th>結果</th><th>發送人</th></tr></thead><tbody>' +
+          rows.map(function (r) {
+            return '<tr' + (/^失敗/.test(r.result) ? ' class="alert"' : '') + '><td>' + esc(String(r.at).slice(5, 16)) + '</td><td>' + esc(r.recipient) + '</td>' +
+              (isLine ? '' : '<td>' + esc(r.address) + '</td>') + '<td>' + esc(r.subject) + '</td><td>' + esc(r.template) + '</td><td>' + esc(r.result) + '</td>' +
+              '<td>' + esc(r.by) + '</td></tr>';
+          }).join('') + '</tbody></table></div><p class="muted small">最近 200 筆；完整紀錄在試算表「發送紀錄」。</p>';
+      }).catch(function (err) {
+        App.errorState(el, err);
+        App.handleError(err);
+      });
+    };
+
+    /** 分頁：每次切換都換一個新的容器，舊分頁綁的事件跟著消失 */
+    App.tabbedBody = function (el, tabs, renderTab) {
+      var current = '';
+      var body = el.querySelector('[data-tab-body]');
+      function setTab(tab) {
+        current = tab;
+        App.$$('[data-tab]', el).forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === tab); });
+        var box = document.createElement('div');
+        box.className = 'stack';
+        body.innerHTML = '';
+        body.appendChild(box);
+        renderTab(tab, box);
+      }
+      el.querySelector('.subtabs').addEventListener('click', function (e) {
+        var b = e.target.closest('[data-tab]');
+        if (b) setTab(b.getAttribute('data-tab'));
+      });
+      setTab(tabs[0][0]);
+      return { set: setTab, current: function () { return current; } };
+    };
+
+    function tabsHtml(tabs) {
+      return '<div><div class="subtabs">' + tabs.map(function (t) {
+        return '<button type="button" data-tab="' + t[0] + '">' + t[1] + '</button>';
+      }).join('') + '</div></div>';
+    }
+    App.tabsHtml = tabsHtml;
+
+    App.registerPage('mail', {
+      title: '信件管理',
+      perm: ['messages.email.send', 'messages.template.manage'],
+      render: function (el) {
+        var canSend = App.can('messages.email.send');
+        var tabs = [];
+        if (canSend) tabs.push(['send', '寄信']);
+        if (App.can('messages.template.manage')) tabs.push(['templates', 'Email 範本']);
+        if (canSend) tabs.push(['log', '寄信紀錄']);
+        el.innerHTML = '<div class="page-head"><div><h1>信件管理</h1><p>用範本寄信給活動來賓、會員或追蹤中的來賓；先預覽再寄出</p></div></div>' +
+          '<div class="stack">' + tabsHtml(tabs) + '<div data-tab-body></div></div>';
+        var page = null;
+
+        function renderSend(box) {
+          if (!page) {
+            App.skeleton(box, 6);
+            App.api('mail.page').then(function (res) {
+              page = res;
+              if (box.isConnected) renderSend(box);
+            }).catch(function (err) {
+              App.errorState(box, err);
+              App.handleError(err);
+            });
+            return;
+          }
+          box.innerHTML = '<div class="grid-2"><section class="card stack" id="ml-content"><div class="card-head"><h2>1. 信件內容</h2></div>' +
+            App.field('範本', '<select id="ml-tpl"><option value="">（不使用範本）</option>' + page.templates.map(function (t) {
+              return '<option value="' + esc(t.id) + '">' + esc(t.name) + '</option>';
+            }).join('') + '</select>') +
+            App.field('主旨', '<input type="text" id="ml-subject" maxlength="150">', true) +
+            App.field('內容', '<textarea id="ml-text" rows="11" maxlength="20000"></textarea>', true) +
+            '<div id="ml-chips"></div></section>' +
+            '<section class="card stack"><div class="card-head"><h2>2. 收件人</h2></div>' +
+            App.field('寄給', '<select id="ml-group">' + page.groups.map(function (g) {
+              return '<option value="' + esc(g.key) + '">' + esc(g.label) + '</option>';
+            }).join('') + '</select>') +
+            '<div id="ml-event"></div>' +
+            '<div id="ml-custom-box" hidden>' + App.field('自訂收件人', '<textarea id="ml-custom" rows="5" placeholder="一行一位，例如：\n王小明 <wang@example.com>\nlee@example.com"></textarea>') + '</div>' +
+            '<p class="muted small" style="margin:0">寄件人名稱：' + esc(page.senderName) + (page.replyTo ? '・回覆信箱：' + esc(page.replyTo) : '') +
+            '<br>今天還可以寄 <b id="ml-quota">' + page.quota + '</b> 封（Gmail 每日額度），一次最多 ' + page.maxPerSend + ' 封</p>' +
+            '<div class="toolbar"><button type="button" class="btn btn-primary" id="ml-preview">預覽收件人與信件</button></div></section></div>' +
+            '<section class="card" id="ml-result" hidden></section>';
+          var $ = function (sel) { return box.querySelector(sel); };
+          var subject = $('#ml-subject');
+          var text = $('#ml-text');
+          var result = $('#ml-result');
+          var eventId = '';
+          var lastDraft = null;
+          var pickerReady = false;
+
+          App.fieldChips($('#ml-chips'), page.fields, lastFocused($('#ml-content'), text));
+
+          function group() {
+            var key = $('#ml-group').value;
+            return page.groups.filter(function (g) { return g.key === key; })[0];
+          }
+
+          function invalidate() {
+            lastDraft = null;
+            result.hidden = true;
+          }
+
+          function syncGroup() {
+            var g = group();
+            $('#ml-custom-box').hidden = g.key !== 'custom';
+            $('#ml-event').hidden = !g.needsEvent;
+            if (g.needsEvent && !pickerReady) {
+              pickerReady = true;
+              App.eventPicker($('#ml-event'), function (e) {
+                eventId = e.id;
+                invalidate();
+              });
+            }
+          }
+
+          function draft() {
+            var g = group();
+            return {
+              templateId: $('#ml-tpl').value, subject: subject.value.trim(), body: text.value, group: g.key,
+              eventId: g.needsEvent ? eventId : '', custom: g.key === 'custom' ? $('#ml-custom').value : ''
+            };
+          }
+
+          function renderPreview(res) {
+            var n = res.recipients.length;
+            result.hidden = false;
+            result.innerHTML = '<div class="card-head"><h2>3. 預覽</h2><span class="muted small">收件人 ' + n + ' 位' +
+              (res.skipped.length ? '・略過 ' + res.skipped.length + ' 位' : '') + '</span></div>' +
+              (n ? '<div class="mail-sample"><div class="muted small">寄給：' + esc(res.sample.to) + '（第一位收件人看到的樣子）</div>' +
+                '<div class="mail-subject">' + esc(res.sample.subject) + '</div><div class="mail-text">' + esc(res.sample.body) + '</div></div>' +
+                '<details><summary>收件人清單（' + n + '）</summary><ul class="list">' + res.recipients.map(function (r) {
+                  return '<li><span>' + esc(r.name) + '</span><span class="muted">' + esc(r.email) + '</span></li>';
+                }).join('') + '</ul></details>' : '<p class="empty">沒有可以寄送的收件人</p>') +
+              (res.skipped.length ? '<details' + (n ? '' : ' open') + '><summary>略過（' + res.skipped.length + '）</summary><ul class="list">' + res.skipped.map(function (s) {
+                return '<li><span>' + esc(s.name) + '</span><span class="muted">' + esc(s.reason) + '</span></li>';
+              }).join('') + '</ul></details>' : '') +
+              (n ? '<div class="toolbar" style="margin-top:12px"><button type="button" class="btn btn-primary" id="ml-send">寄出 ' + n + ' 封</button></div>' : '');
+            var sendBtn = result.querySelector('#ml-send');
+            if (sendBtn) sendBtn.addEventListener('click', function () { send(sendBtn, n); });
+          }
+
+          function send(btn, n) {
+            var d = lastDraft;
+            if (!d) return;
+            App.modal.confirm('寄出信件', '確定寄出 ' + n + ' 封信？寄出後無法收回。', '寄出').then(function (ok) {
+              if (!ok) return;
+              return App.withButton(btn, function () {
+                return App.api('mail.send', d).then(function (res) {
+                  $('#ml-quota').textContent = res.quota;
+                  page.quota = res.quota;
+                  lastDraft = null;
+                  result.innerHTML = '<div class="card-head"><h2>寄送結果</h2></div><p style="margin:0">已寄出 <b>' + res.sent + '</b> 封' +
+                    (res.failed.length ? '，失敗 ' + res.failed.length + ' 封' : '') + '。今天還可以寄 ' + res.quota + ' 封。</p>' +
+                    (res.failed.length ? '<ul class="list">' + res.failed.map(function (f) {
+                      return '<li><span>' + esc(f.name + ' ' + f.email) + '</span><span class="muted">' + esc(f.error) + '</span></li>';
+                    }).join('') + '</ul>' : '');
+                  App.toast('已寄出 ' + res.sent + ' 封');
+                });
+              });
+            }).catch(App.handleError);
+          }
+
+          $('#ml-tpl').addEventListener('change', function () {
+            var id = this.value;
+            var t = page.templates.filter(function (x) { return x.id === id; })[0];
+            if (t) {
+              subject.value = t.subject;
+              text.value = t.body;
+            }
+            invalidate();
+          });
+          $('#ml-group').addEventListener('change', function () {
+            syncGroup();
+            invalidate();
+          });
+          box.addEventListener('input', function (e) {
+            if (e.target.closest('#ml-result')) return;
+            invalidate();
+          });
+          $('#ml-preview').addEventListener('click', function () {
+            var d = draft();
+            if (!d.subject || !d.body.trim()) {
+              App.toast('請填寫主旨和內容', 'error');
+              return;
+            }
+            if (group().needsEvent && !d.eventId) {
+              App.toast('請選擇活動', 'error');
+              return;
+            }
+            App.withButton(this, function () {
+              return App.api('mail.preview', d).then(function (res) {
+                lastDraft = d;
+                renderPreview(res);
+                result.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              });
+            }).catch(App.handleError);
+          });
+          syncGroup();
+        }
+
+        App.tabbedBody(el, tabs, function (tab, box) {
+          if (tab === 'send') renderSend(box);
+          else if (tab === 'templates') App.templateManager(box, 'Email', function () { page = null; });
+          else App.sendLogTable(box, 'Email');
+        });
+      }
+    });
+  })();
+</script>

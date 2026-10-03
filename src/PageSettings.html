@@ -92,7 +92,7 @@
         el.innerHTML = '<div class="page-head"><div><h1>系統設定</h1><p>分會資料、每週提醒與帳號</p></div></div><div class="stack">' +
           (canSettings ? '<section class="card"><div class="card-head"><h2>分會設定</h2></div><form id="st-form" class="stack"></form></section>' +
             '<section class="card"><div class="card-head"><h2>每週提醒</h2><button type="button" class="btn btn-primary btn-sm" id="rm-add">＋ 新增提醒</button></div>' +
-            '<p class="muted small" style="margin-top:0">顯示在首頁「這一週」，例如「週三 12:00 BNI Connect 登錄截止」。</p><div id="rm-list"></div></section>' : '') +
+            '<p class="muted small" style="margin-top:0">顯示在首頁「這一週」，例如「週三 12:00 BNI Connect 登錄截止」。勾選「推播到 LINE」的提醒，要在「LINE 小助理 → 機器人設定」開啟自動推播。</p><div id="rm-list"></div></section>' : '') +
           (canAccounts ? '<section class="card"><div class="card-head"><h2>帳號管理</h2><button type="button" class="btn btn-primary btn-sm" id="ac-add">＋ 新增帳號</button></div><div id="ac-list"></div></section>' : '') +
           (canSettings ? '<section class="card"><div class="card-head"><h2>資料</h2></div><p class="muted" style="margin-top:0">所有資料都存在 Google 試算表；刪除一律只標記「已刪除」，原始資料留在試算表。</p><div class="toolbar" id="st-links"></div></section>' : '') +
           '</div>';

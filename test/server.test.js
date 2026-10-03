@@ -495,3 +495,287 @@ test('產業分析：產業群組、重複專業別、招募目標缺口、來�
   s.admin('industry.deleteTarget', { id: lawyer.id });
   assert.deepEqual(s.admin('industry.analysis').targets.map((t) => t.category), ['會計師']);
 });
+
+test('財務：報名繳費自動入帳、取消與刪除自動作廢、手動記帳、作廢連動報名、月結與餘額', () => {
+  const s = setup();
+  addMembersByHand(s);
+  s.admin('settings.save', { guestFee: '500', openingBalance: '10000' });
+
+  const self = s.api('public.register', { eventId: MTG, name: '自己標繳費', category: '會計', paid: true }).data.registration;
+  assert.equal(self.paid, false, '公開報名頁不能自己標記已繳費');
+
+  const walk = s.admin('registrations.walkin', { eventId: MTG, name: '現場丙', category: '律師', paid: true }).registration;
+  let ledger = rowsOf(s, '收支帳');
+  assert.equal(ledger.length, 1, '只有幹部標記的繳費會入帳');
+  assert.deepEqual(
+    ['類型', '科目', '金額', '對象', '關聯ID', '經手人', '狀態', '日期'].map((k) => ledger[0][k]),
+    ['收入', '來賓費', 500, '現場丙', walk.id, 'Joy', '正常', '2026-10-08']
+  );
+  assert.equal(rowsOf(s, '報名名單').find((r) => r['姓名'] === '現場丙')['帳目ID'], ledger[0]['帳目ID']);
+  s.admin('registrations.update', { id: walk.id, patch: { paid: false } });
+  assert.equal(rowsOf(s, '報名名單').find((r) => r['姓名'] === '現場丙')['帳目ID'], '');
+  s.admin('registrations.update', { id: walk.id, patch: { paid: true } });
+  s.admin('registrations.delete', { id: walk.id });
+  ledger = rowsOf(s, '收支帳');
+  assert.deepEqual(ledger.map((r) => [r['狀態'], r['作廢原因'], r['作廢人']]), [['作廢', '取消繳費', 'Joy'], ['作廢', '刪除報名', 'Joy']]);
+
+  s.admin('registrations.update', { id: self.id, patch: { paid: true } });
+  const party = s.admin('events.save', { type: '聯誼', name: '中秋烤肉', date: '2026-10-10', fee: '600', openRegistration: true });
+  const member = s.admin('registrations.add', { eventId: party.id, role: '會員', memberId: 'M001', paid: true }).registration;
+  const free = s.admin('events.save', { type: '培訓', name: '免費培訓', date: '2026-10-12', openRegistration: true });
+  assert.equal(s.admin('registrations.add', { eventId: free.id, name: '免費來賓', paid: true }).registration.paid, true);
+  assert.equal(rowsOf(s, '收支帳').length, 4, '免費活動標記繳費不記帳');
+  const partyRow = rowsOf(s, '收支帳').find((r) => r['關聯ID'] === member.id);
+  assert.deepEqual([partyRow['科目'], partyRow['金額'], partyRow['說明']], ['活動收入', 600, '2026-10-10（六） 中秋烤肉（會員）']);
+
+  s.admin('finance.create', { type: '支出', date: '2026-10-08', category: '場地費', amount: '3,000', party: '暮溢共享空間', note: '10 月場地' });
+  s.admin('finance.create', { type: '收入', date: '2026-09-30', category: '其他收入', amount: '200.5' });
+  assert.match(s.api('finance.create', { type: '支出', date: '2026-10-08', category: '場地費', amount: '-5' }, s.token).error, /大於 0/);
+  assert.match(s.api('finance.create', { type: '收', date: '2026-10-08', category: '場地費', amount: '5' }, s.token).error, /收入或支出/);
+  assert.match(s.api('finance.create', { type: '支出', date: '', category: '場地費', amount: '5' }, s.token).error, /日期/);
+
+  const partyEntry = s.admin('finance.page', { month: '2026-10' }).entries.find((e) => e.relatedId === member.id);
+  assert.match(s.api('finance.void', { id: partyEntry.id, reason: ' ' }, s.token).error, /作廢原因/);
+  s.admin('finance.void', { id: partyEntry.id, reason: '重複收款' });
+  assert.equal(s.admin('registrations.list', { eventId: party.id })[0].paid, false, '作廢收入會取消報名的已繳費');
+  assert.match(s.api('finance.void', { id: partyEntry.id, reason: '再一次' }, s.token).error, /已經作廢/);
+
+  const page = s.admin('finance.page', { month: '2026-10' });
+  assert.deepEqual(page.summary, { income: 500, expense: 3000, net: -2500, balance: 7700.5 });
+  assert.equal(page.balance, 7700.5);
+  assert.deepEqual(page.monthly.slice(8, 10).map((m) => [m.month, m.income, m.expense, m.balance, m.future]),
+    [['2026-09', 200.5, 0, 10200.5, false], ['2026-10', 500, 3000, 7700.5, false]]);
+  assert.equal(page.monthly[10].future, true);
+  assert.deepEqual(page.byCategory.map((c) => [c.type, c.category, c.amount, c.count]), [['收入', '來賓費', 500, 1], ['支出', '場地費', 3000, 1]]);
+  assert.deepEqual([page.entries.length, page.entries.filter((e) => e.voided).length], [5, 3], '作廢的帳仍列在明細');
+  assert.equal(s.admin('finance.page', { month: '2027-01' }).monthly[0].balance, 7700.5, '跨年的月結從前一年累計');
+});
+
+test('會員月費：一次繳多個月、已繳月份擋下、作廢整筆連動、繳納表、首頁卡片與權限', () => {
+  const s = setup();
+  addMembersByHand(s);
+  s.admin('settings.save', { monthlyDues: '1000' });
+  const paid = s.admin('finance.payDues', { memberId: 'M001', months: ['2026-12', '2026-10', '2026-11', '2026-10'] });
+  assert.deepEqual(paid.months, ['2026-10', '2026-11', '2026-12']);
+  assert.deepEqual([paid.ledger.amount, paid.ledger.category, paid.ledger.note], [3000, '會員月費', '月費 2026-10～2026-12（3 個月）']);
+  assert.deepEqual(rowsOf(s, '會費紀錄').map((r) => r['月份']), ['2026-10', '2026-11', '2026-12'], '月份存成文字，不會被轉成日期');
+  assert.match(s.api('finance.payDues', { memberId: 'M001', months: ['2026-12', '2027-01'] }, s.token).error, /王小明 的 2026-12 已經繳過了/);
+  assert.match(s.api('finance.payDues', { memberId: 'M001', months: ['2026-13'] }, s.token).error, /請選擇要繳的月份/);
+  assert.match(s.api('finance.payDues', { memberId: 'M999', months: ['2027-01'] }, s.token).error, /找不到這位會員/);
+  s.admin('finance.payDues', { memberId: 'M002', months: '2026-10', amount: '800', paidDate: '2026-10-05' });
+
+  let grid = s.admin('finance.dues', { year: '2026' });
+  assert.deepEqual(grid.members.map((m) => m.name), ['王小明', '陳大華', '林美麗']);
+  assert.deepEqual(Object.keys(grid.members[0].cells), ['2026-10', '2026-11', '2026-12']);
+  assert.deepEqual(grid.totals[9], { month: '2026-10', count: 2, amount: 1800 });
+  assert.deepEqual([grid.monthlyDues, grid.startMonth], [1000, '2026-10']);
+  let card = s.admin('home.data').cards.finance;
+  assert.deepEqual([card.balance, card.income, card.expense, card.duesUnpaid], [3800, 3800, 0, 1]);
+
+  s.admin('finance.voidDues', { id: grid.members[0].cells['2026-11'].id, reason: '金額有誤' });
+  grid = s.admin('finance.dues', { year: '2026' });
+  assert.deepEqual(Object.keys(grid.members[0].cells), [], '同一次繳的月份一起作廢');
+  assert.deepEqual(rowsOf(s, '收支帳').map((r) => [r['對象'], r['狀態'], r['作廢原因']]), [['王小明', '作廢', '金額有誤'], ['陳大華', '正常', '']]);
+  s.admin('finance.payDues', { memberId: 'M001', months: '2026-10' });
+  card = s.admin('home.data').cards.finance;
+  assert.deepEqual([card.balance, card.duesUnpaid], [1800, 1]);
+
+  const entry = s.admin('finance.page', {}).entries.find((e) => e.party === '陳大華');
+  s.admin('finance.void', { id: entry.id, reason: '退費' });
+  assert.equal(Object.keys(s.admin('finance.dues', {}).members[1].cells).length, 0, '從收支帳作廢，月費紀錄也作廢');
+
+  s.admin('accounts.create', { username: 'cara', displayName: 'Cara', roles: ['財務'], password: 'cara-pass-123' });
+  s.admin('accounts.create', { username: 'amy', displayName: 'Amy', roles: '來賓接待', password: 'amy-pass-123' });
+  const cara = s.as(s.login('cara', 'cara-pass-123'));
+  const amy = s.login('amy', 'amy-pass-123');
+  assert.equal(cara('finance.payDues', { memberId: 'M003', months: ['2026-10'] }).ledger.handledBy, 'Cara');
+  assert.equal(cara('home.data').cards.finance.duesUnpaid, 1);
+  assert.match(s.api('finance.page', {}, amy).error, /權限/);
+  assert.match(s.api('finance.payDues', { memberId: 'M003', months: ['2026-11'] }, amy).error, /權限/);
+  assert.equal(s.api('home.data', {}, amy).data.cards.finance, undefined);
+});
+
+test('信件：範本欄位檢查、收件對象、預覽、寄出與每日額度、發送紀錄、權限', () => {
+  const s = setup();
+  addMembersByHand(s);
+  s.admin('settings.save', { chapterName: 'BNI 震宇分會', replyTo: 'chair@example.com', mailSenderName: '震宇分會秘書' });
+  const page = s.admin('mail.page');
+  assert.deepEqual(page.templates.map((t) => t.name), ['感謝來賓蒞臨', '例會邀請', '會籍到期提醒']);
+  assert.deepEqual([page.senderName, page.replyTo, page.quota], ['震宇分會秘書', 'chair@example.com', 100]);
+  assert.match(s.api('messages.saveTemplate', { channel: 'Email', name: '錯字', subject: '{{姓明}}您好', body: '內容' }, s.token).error, /\{\{姓明\}\} 不是可用的欄位/);
+  assert.match(s.api('messages.saveTemplate', { channel: 'Email', name: '沒主旨', subject: '', body: '內容' }, s.token).error, /主旨/);
+  const tpl = s.admin('messages.saveTemplate', { channel: 'Email', name: '測試信', subject: '{{姓名}}，謝謝參加{{活動名稱}}', body: '- {{姓名}} 您好\n\n{{分會名稱}}\n報名：{{報名連結}}' });
+  assert.equal(s.admin('messages.templates', { channel: 'Email' }).templates.find((t) => t.id === tpl.id).body, tpl.body, '開頭是 - 的內容不會被當成公式');
+
+  s.api('public.register', { eventId: MTG, name: '來賓甲', category: '設計', email: 'a@example.com' });
+  s.api('public.register', { eventId: MTG, name: '來賓乙', category: '保險', email: 'not-an-email' });
+  s.api('public.register', { eventId: MTG, name: '來賓丙', category: '律師' });
+  s.api('public.register', { eventId: MTG, name: '來賓丁', category: '會計', email: 'A@example.com' });
+  const draft = { templateId: tpl.id, subject: tpl.subject, body: tpl.body, group: 'eventGuests', eventId: MTG };
+  const preview = s.admin('mail.preview', draft);
+  assert.deepEqual(preview.recipients, [{ name: '來賓甲', email: 'a@example.com' }], '同一個信箱只寄一次');
+  assert.deepEqual(preview.skipped, [{ name: '來賓乙', reason: 'Email 格式不正確' }, { name: '來賓丙', reason: '沒有 Email' }]);
+  assert.equal(preview.sample.subject, '來賓甲，謝謝參加例會');
+  assert.equal(preview.sample.body, '- 來賓甲 您好\n\nBNI 震宇分會\n報名：https://script.google.com/macros/s/fake/exec?page=register&event=MTG-2026-10-08');
+  assert.equal(s.admin('mail.preview', { ...draft, group: 'eventArrived' }).recipients.length, 0);
+
+  const sent = s.admin('mail.send', draft);
+  assert.deepEqual([sent.sent, sent.failed.length, sent.quota], [1, 0, 99]);
+  assert.deepEqual(s.outbox[0], { to: 'a@example.com', subject: '來賓甲，謝謝參加例會', body: preview.sample.body, name: '震宇分會秘書', replyTo: 'chair@example.com' });
+
+  const custom = s.admin('mail.preview', { subject: '通知', body: '{{姓名}} 您好', group: 'custom', custom: '王大明 <wang@example.com>\nwang@example.com；bad' });
+  assert.deepEqual(custom.recipients, [{ name: '王大明', email: 'wang@example.com' }]);
+  assert.deepEqual(custom.skipped, [{ name: 'bad', reason: 'Email 格式不正確' }]);
+  assert.equal(custom.sample.body, '王大明 您好');
+  assert.match(s.api('mail.send', { subject: '通知', body: '{{不存在}}', group: 'custom', custom: 'x@example.com' }, s.token).error, /不是可用的欄位/);
+  assert.match(s.api('mail.send', { subject: '通知', body: '內容', group: 'members' }, s.token).error, /沒有可以寄送的收件人/);
+  s.mail.quota = 0;
+  assert.match(s.api('mail.send', draft, s.token).error, /今天剩下 0 封寄信額度/);
+
+  const log = s.admin('messages.log', { channel: 'Email' });
+  assert.deepEqual(log.map((l) => [l.template, l.recipient, l.address, l.subject, l.result, l.by]), [['測試信', '來賓甲', 'a@example.com', '來賓甲，謝謝參加例會', '成功', 'Joy']]);
+  s.admin('messages.deleteTemplate', { id: tpl.id });
+  assert.equal(rowsOf(s, '訊息範本').find((r) => r['範本ID'] === tpl.id)['已刪除'], '是');
+
+  s.admin('accounts.create', { username: 'amy', displayName: 'Amy', roles: '來賓接待', password: 'amy-pass-123' });
+  const amy = s.login('amy', 'amy-pass-123');
+  assert.match(s.api('mail.page', {}, amy).error, /權限/);
+  assert.match(s.api('messages.log', { channel: 'Email' }, amy).error, /權限/);
+  assert.equal(s.api('messages.log', { channel: 'LINE' }, amy).ok, true);
+});
+
+const LINE_TOKEN = 'a'.repeat(40) + '/b+c=';
+
+/** 假的 LINE API：Token 對才回應，push 的結果可以在測試裡改 */
+function fakeLine(s, overrides = {}) {
+  s.urlFetch.handler = (url, opts) => {
+    if ((opts.headers || {}).Authorization !== 'Bearer ' + LINE_TOKEN) return { code: 401, body: { message: 'Authentication failed' } };
+    for (const [suffix, res] of Object.entries(overrides)) if (url.endsWith(suffix)) return res;
+    if (url.endsWith('/v2/bot/info')) return { code: 200, body: { displayName: '震宇小助理' } };
+    if (url.endsWith('/summary')) return { code: 200, body: { groupName: '震宇分會群組' } };
+    if (url.endsWith('/members/count')) return { code: 200, body: { count: 35 } };
+    if (url.endsWith('/v2/bot/message/quota')) return { code: 200, body: { type: 'limited', value: 200 } };
+    if (url.endsWith('/v2/bot/message/quota/consumption')) return { code: 200, body: { totalUsage: 70 } };
+    return { code: 200, body: {} };
+  };
+}
+
+function lineWebhook(s, events) {
+  return s.call('doPost', { postData: { contents: JSON.stringify({ destination: 'U0', events }) } });
+}
+
+function groupText(text, groupId = 'Cgroup1') {
+  return { type: 'message', replyToken: 'rt', source: { type: 'group', groupId, userId: 'U1' }, message: { type: 'text', text } };
+}
+
+function lastReply(s) {
+  const r = s.requests.filter((x) => x.url.endsWith('/message/reply')).at(-1);
+  return r ? JSON.parse(r.payload).messages[0].text : '';
+}
+
+test('LINE：產生文字、Token 驗證只寫不讀、Webhook 綁定群組與防猜、推播與紀錄、額度、權限', () => {
+  const s = setup();
+  addMembersByHand(s);
+  fakeLine(s);
+  let page = s.admin('line.page');
+  assert.equal(page.configured, false);
+  assert.deepEqual(page.templates.map((t) => t.name), ['例會提醒', '報名邀請', '歡迎來賓']);
+  s.api('public.register', { eventId: MTG, name: '來賓甲', category: '設計' });
+  const text = s.admin('line.compose', { templateId: page.templates[0].id, eventId: MTG }).text;
+  assert.equal(text, '【BNI ○○分會】例會提醒\n📅 2026-10-08（四） 07:00–09:00\n📍 \n目前已有 1 位來賓報名，大家加油！');
+  s.admin('checkin.member', { eventId: MTG, memberId: 'M001', status: 'P' });
+  assert.match(s.admin('line.compose', { kind: 'attendance', eventId: MTG }).text, /^【BNI ○○分會】2026-10-08（四） 出席結果\n會員 3 位：出席 1、遲到 0、代理 0、病假 0、缺席 0、未簽到 2/);
+  assert.equal(s.admin('checkin.attendanceText', { eventId: MTG }), s.admin('line.compose', { kind: 'attendance', eventId: MTG }).text);
+  assert.match(s.api('line.compose', { kind: 'palms', from: '2026-09-24', to: '2026-09-30' }, s.token).error, /沒有 PALMS 資料/);
+  assert.match(s.api('line.send', { groupIds: ['x'], text: 'hi' }, s.token).error, /請選擇要推播的群組/);
+  assert.match(s.api('line.bind', {}, s.token).error, /請先設定/);
+
+  assert.match(s.api('line.saveToken', { token: 'short' }, s.token).error, /格式不正確/);
+  assert.match(s.api('line.saveToken', { token: 'x'.repeat(40) }, s.token).error, /Token 無效/);
+  const saved = s.admin('line.saveToken', { token: LINE_TOKEN });
+  assert.deepEqual([saved.configured, saved.botName, saved.webhookUrl], [true, '震宇小助理', 'https://script.google.com/macros/s/fake/exec']);
+  assert.ok(!JSON.stringify(s.admin('line.settings')).includes(LINE_TOKEN), 'Token 只寫不讀');
+  assert.ok(!JSON.stringify(s.admin('line.page')).includes(LINE_TOKEN));
+
+  lineWebhook(s, [{ type: 'join', replyToken: 'rt0', source: { type: 'group', groupId: 'Cgroup1' } }]);
+  assert.match(lastReply(s), /輸入「綁定 六位數字」/);
+  const { code } = s.admin('line.bind');
+  assert.match(code, /^\d{6}$/);
+  const wrong = code === '123456' ? '654321' : '123456';
+  lineWebhook(s, [groupText('綁定 ' + wrong)]);
+  assert.match(lastReply(s), /錯誤或已過期/);
+  lineWebhook(s, [groupText('綁定' + code)]);
+  assert.equal(lastReply(s), '✅ 已綁定「震宇分會群組」，之後可以從系統推播訊息到這個群組');
+  lineWebhook(s, [groupText('綁定 ' + code, 'Cgroup2')]);
+  assert.match(lastReply(s), /錯誤或已過期/, '綁定碼只能用一次');
+  assert.deepEqual(s.admin('line.settings').groups.map((g) => [g.id, g.name, g.boundBy]), [['Cgroup1', '震宇分會群組', 'Joy']]);
+  const before = s.requests.length;
+  lineWebhook(s, [groupText('大家早安'), { type: 'message', source: { type: 'user', userId: 'U1' }, message: { type: 'text', text: '綁定 ' + code } }]);
+  assert.equal(s.requests.length, before, '一般訊息與私訊不處理');
+  assert.equal(s.call('doPost', { postData: { contents: 'not json' } }).text, 'OK');
+  for (let i = 0; i < 8; i++) lineWebhook(s, [groupText('綁定 ' + wrong, 'Cevil')]);
+  const { code: code2 } = s.admin('line.bind');
+  lineWebhook(s, [groupText('綁定 ' + code2, 'Cevil')]);
+  assert.match(lastReply(s), /錯誤太多次/, '猜錯太多次暫停綁定');
+  s.cache.remove('line_bind_fail');
+
+  const res = s.admin('line.send', { groupIds: ['Cgroup1'], text, templateId: page.templates[0].id });
+  assert.deepEqual(res.results.map((r) => [r.name, r.ok]), [['震宇分會群組', true]]);
+  const push = s.requests.at(-1);
+  assert.equal(push.url, 'https://api.line.me/v2/bot/message/push');
+  assert.match(push.headers['X-Line-Retry-Key'], /^[0-9a-f-]{36}$/);
+  assert.deepEqual(JSON.parse(push.payload), { to: 'Cgroup1', messages: [{ type: 'text', text }] });
+  assert.match(s.api('line.send', { groupIds: ['Cgroup1'], text: 'x'.repeat(5001) }, s.token).error, /最多 5000 字/);
+  fakeLine(s, { '/message/push': { code: 429, body: { message: 'You have reached your monthly limit.' } } });
+  s.setNow('2026-10-08T06:55:00+08:00');
+  assert.equal(s.admin('line.send', { groupIds: ['Cgroup1'], text: '第二則', label: '自訂' }).results[0].error, '本月訊息額度已用完，或發送太頻繁');
+  fakeLine(s);
+  assert.deepEqual(s.admin('messages.log', { channel: 'LINE' }).map((l) => [l.template, l.recipient, l.result]),
+    [['自訂', '震宇分會群組', '失敗：本月訊息額度已用完，或發送太頻繁'], ['例會提醒', '震宇分會群組', '成功']], '新的在前');
+  const quota = s.admin('line.quota');
+  assert.deepEqual([quota.limit, quota.used, quota.remaining, quota.groups[0].count], [200, 70, 130, 35]);
+
+  s.admin('accounts.create', { username: 'amy', displayName: 'Amy', roles: '來賓接待', password: 'amy-pass-123' });
+  const amy = s.as(s.login('amy', 'amy-pass-123'));
+  page = amy('line.page');
+  assert.deepEqual([page.configured, page.canManage, page.groups.length], [true, false, 1]);
+  assert.equal(amy('line.send', { groupIds: ['Cgroup1'], text: 'Amy 的訊息' }).results[0].ok, true);
+  assert.match(s.api('line.settings', {}, s.login('amy', 'amy-pass-123')).error, /權限/);
+
+  s.admin('line.unbind', { id: 'Cgroup1' });
+  assert.deepEqual(s.admin('line.settings').groups, []);
+  assert.equal(s.admin('line.saveToken', { clear: true }).configured, false);
+});
+
+test('排程：每週提醒到時間推播到 LINE、每天只推一次、太晚不補推、排程開關', () => {
+  const s = setup();
+  fakeLine(s);
+  s.call('cronHourly'); // 還沒設定 LINE：什麼都不做
+  s.admin('line.saveToken', { token: LINE_TOKEN });
+  const { code } = s.admin('line.bind');
+  lineWebhook(s, [groupText('綁定 ' + code, 'G1')]);
+  s.admin('settings.save', { meetingPlace: '暮溢共享空間' });
+  s.admin('reminders.save', { weekday: '四', time: '12:00', content: '下次例會 {{例會日期}}，地點：{{例會地點}}', pushLine: true });
+  s.admin('reminders.save', { weekday: '四', time: '09:00', content: '太早的提醒', pushLine: true });
+  s.admin('reminders.save', { weekday: '四', time: '12:10', content: '不推播的提醒', pushLine: false });
+  const pushes = () => s.requests.filter((r) => r.url.endsWith('/message/push')).map((r) => JSON.parse(r.payload).messages[0].text);
+
+  s.setNow('2026-10-08T11:59:00+08:00');
+  s.call('cronHourly');
+  assert.deepEqual(pushes(), []);
+  s.setNow('2026-10-08T12:40:00+08:00');
+  s.call('cronHourly');
+  s.call('cronHourly');
+  assert.deepEqual(pushes(), ['下次例會 2026-10-15（四），地點：暮溢共享空間'], '只推到時間、90 分鐘內、勾選推播的提醒，且每天一次');
+  s.setNow('2026-10-15T12:05:00+08:00');
+  s.call('cronHourly');
+  assert.equal(pushes().length, 2, '下週同一則再推一次');
+  assert.deepEqual(s.admin('messages.log', { channel: 'LINE' }).map((l) => [l.template, l.by]), [['每週提醒', '自動提醒'], ['每週提醒', '自動提醒']]);
+
+  assert.equal(s.admin('line.cron', { enabled: true }).cron, true);
+  s.admin('line.cron', { enabled: true });
+  assert.deepEqual(s.triggers.map((t) => [t.getHandlerFunction(), t.spec.every]), [['cronHourly', 1]]);
+  assert.equal(s.admin('line.settings').pushReminders, 2);
+  assert.equal(s.admin('line.cron', { enabled: false }).cron, false);
+  assert.equal(s.triggers.length, 0);
+});

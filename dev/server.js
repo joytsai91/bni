@@ -7,6 +7,9 @@
  *   npm run dev                     → http://127.0.0.1:8080（含示範資料，帳號密碼會印在終端機）
  *   http://127.0.0.1:8080/exec?page=register → 來賓報名頁
  *   DEV_NOW=2026-10-08T07:05:00+08:00 npm run dev → 固定「現在時間」測試遲到判定
+ *
+ * LINE 機器人在本機是假的：任何 20 碼以上的 Token 都算有效；在「機器人設定」產生綁定碼後，
+ * 用 curl -X POST http://127.0.0.1:8080/__dev/line -d '綁定 123456' 模擬在群組輸入。
  */
 const http = require('http');
 const fs = require('fs');
@@ -65,6 +68,28 @@ const QR_STUB = `window.QRCode = function (el, o) {
 };
 window.QRCode.CorrectLevel = { L: 1, M: 0, Q: 3, H: 2 };`;
 
+/** 本機預覽的假 LINE API */
+function fakeLineApi(gas) {
+  gas.urlFetch.handler = (url) => {
+    if (url.endsWith('/v2/bot/info')) return { code: 200, body: { displayName: 'BNI 小助理（本機預覽）' } };
+    if (url.endsWith('/summary')) return { code: 200, body: { groupName: 'BNI 示範分會群組' } };
+    if (url.endsWith('/members/count')) return { code: 200, body: { count: 32 } };
+    if (url.endsWith('/v2/bot/message/quota')) return { code: 200, body: { type: 'limited', value: 200 } };
+    if (url.endsWith('/v2/bot/message/quota/consumption')) return { code: 200, body: { totalUsage: 64 } };
+    return { code: 200, body: {} };
+  };
+}
+
+/** 模擬有人在 LINE 群組輸入文字，回傳機器人的回覆 */
+function simulateLineText(gas, text, groupId) {
+  const before = gas.requests.length;
+  gas.call('doPost', { postData: { contents: JSON.stringify({ events: [{
+    type: 'message', replyToken: 'dev', source: { type: 'group', groupId: groupId || 'Cdevgroup' }, message: { type: 'text', text }
+  }] }) } });
+  const reply = gas.requests.slice(before).filter((r) => r.url.endsWith('/message/reply')).pop();
+  return reply ? JSON.parse(reply.payload).messages[0].text : '';
+}
+
 function send(res, status, type, body) {
   res.writeHead(status, { 'Content-Type': type + '; charset=utf-8', 'Cache-Control': 'no-store' });
   res.end(body);
@@ -74,6 +99,7 @@ function start({ port = 8080, now = process.env.DEV_NOW, withSeed = true } = {})
   let actualPort = port;
   const gas = createGas({ url: () => `http://127.0.0.1:${actualPort}/exec` });
   if (now) gas.setNow(now);
+  fakeLineApi(gas);
   const seeded = withSeed ? seed(gas) : null;
 
   const server = http.createServer((req, res) => {
@@ -91,6 +117,12 @@ function start({ port = 8080, now = process.env.DEV_NOW, withSeed = true } = {})
             send(res, 200, 'application/json', JSON.stringify({ error: err.message }));
           }
         });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/__dev/line') {
+        let body = '';
+        req.on('data', (c) => { body += c; });
+        req.on('end', () => send(res, 200, 'text/plain', simulateLineText(gas, body.trim()) + '\n'));
         return;
       }
       if (url.pathname === '/' || url.pathname === '/exec') {
@@ -121,4 +153,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { start };
+module.exports = { start, simulateLineText };

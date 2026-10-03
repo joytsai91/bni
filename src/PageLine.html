@@ -1,0 +1,300 @@
+<script>
+  /*
+   * LINE 小助理：用範本、出席結果或 PALMS 週報產生文字 → 複製、分享到 LINE，或由機器人推播到已綁定的群組；
+   * LINE 範本、推播紀錄；機器人設定（Token、Webhook、綁定群組、每週提醒自動推播）。
+   */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    function shareUrl(text) {
+      return 'https://line.me/R/share?text=' + encodeURIComponent(text);
+    }
+
+    App.registerPage('line', {
+      title: 'LINE 小助理',
+      perm: ['line.message.send', 'line.bot.manage'],
+      render: function (el) {
+        var canSend = App.can('line.message.send');
+        var tabs = [];
+        if (canSend) tabs.push(['send', '發送訊息']);
+        if (App.can('messages.template.manage')) tabs.push(['templates', 'LINE 範本']);
+        if (canSend) tabs.push(['log', '推播紀錄']);
+        if (App.can('line.bot.manage')) tabs.push(['bot', '機器人設定']);
+        el.innerHTML = '<div class="page-head"><div><h1>LINE 小助理</h1><p>產生例會提醒、出席結果、PALMS 週報，複製貼上或直接推播到群組</p></div></div>' +
+          '<div class="stack">' + App.tabsHtml(tabs) + '<div data-tab-body></div></div>';
+        var page = null;
+
+        // ---------- 發送訊息 ----------
+
+        function renderSend(box) {
+          if (!page) {
+            App.skeleton(box, 6);
+            App.api('line.page').then(function (res) {
+              page = res;
+              if (box.isConnected) renderSend(box);
+            }).catch(function (err) {
+              App.errorState(box, err);
+              App.handleError(err);
+            });
+            return;
+          }
+          var canPush = page.configured && page.groups.length > 0;
+          box.innerHTML = '<div class="grid-2"><section class="card stack"><div class="card-head"><h2>1. 選擇內容</h2></div>' +
+            App.field('內容來源', '<select id="ln-kind">' + page.templates.map(function (t) {
+              return '<option value="tpl:' + esc(t.id) + '">範本：' + esc(t.name) + '</option>';
+            }).join('') + '<option value="attendance">例會出席結果</option>' + (page.palmsPeriods.length ? '<option value="palms">PALMS 週報</option>' : '') + '</select>') +
+            '<div id="ln-event"></div>' +
+            '<div id="ln-palms" hidden>' + App.field('PALMS 期間', '<select id="ln-period">' + page.palmsPeriods.map(function (p) {
+              return '<option value="' + esc(p.from + '|' + p.to) + '">' + esc(p.from + ' ～ ' + p.to) + '</option>';
+            }).join('') + '</select>') + '</div>' +
+            '<div class="toolbar"><button type="button" class="btn btn-primary" id="ln-compose">產生文字</button></div></section>' +
+            '<section class="card stack"><div class="card-head"><h2>2. 確認後發送</h2></div>' +
+            '<textarea id="ln-text" rows="11" maxlength="5000" placeholder="按「產生文字」，或直接輸入要發送的內容"></textarea>' +
+            '<div class="toolbar"><button type="button" class="btn" id="ln-copy">複製</button>' +
+            '<a class="btn" id="ln-share" target="_blank" rel="noopener" href="' + shareUrl('') + '">分享到 LINE</a>' +
+            (canPush ? '<button type="button" class="btn btn-primary" id="ln-push">推播到群組</button>' : '') + '</div>' +
+            (canPush ? '' : '<p class="muted small" style="margin:0">' + (page.canManage ?
+              '到「機器人設定」設定 LINE 官方帳號並綁定群組後，就能直接推播。' : '管理員設定 LINE 機器人並綁定群組後，就能直接推播。') + '</p>') +
+            '</section></div>' +
+            (page.configured ? '<section class="card"><div class="card-head"><h2>本月訊息額度</h2><button type="button" class="btn btn-sm" id="ln-quota">查詢</button></div>' +
+              '<div id="ln-quota-box"><p class="muted small" style="margin:0">推播到群組時，群組裡每位成員都算一則訊息。</p></div></section>' : '');
+          var $ = function (sel) { return box.querySelector(sel); };
+          var text = $('#ln-text');
+          var eventId = '';
+          var composed = null; // 最後一次「產生文字」用的範本，手動改過內容就不算
+
+          function kind() {
+            var v = $('#ln-kind').value;
+            return v.indexOf('tpl:') === 0 ? 'template' : v;
+          }
+
+          function syncKind() {
+            $('#ln-event').hidden = kind() === 'palms';
+            $('#ln-palms').hidden = kind() !== 'palms';
+          }
+
+          function syncShare() {
+            $('#ln-share').href = shareUrl(text.value);
+          }
+
+          App.eventPicker($('#ln-event'), function (e) { eventId = e.id; });
+          $('#ln-kind').addEventListener('change', syncKind);
+          text.addEventListener('input', function () {
+            composed = null;
+            syncShare();
+          });
+          $('#ln-compose').addEventListener('click', function () {
+            var k = kind();
+            var data = { kind: k, eventId: eventId };
+            if (k === 'template') data.templateId = $('#ln-kind').value.slice(4);
+            if (k === 'palms') {
+              var p = $('#ln-period').value.split('|');
+              data.from = p[0];
+              data.to = p[1];
+            }
+            if (k !== 'palms' && !eventId) {
+              App.toast('請選擇活動', 'error');
+              return;
+            }
+            App.withButton(this, function () {
+              return App.api('line.compose', data).then(function (res) {
+                text.value = res.text;
+                composed = { templateId: data.templateId || '', label: $('#ln-kind').selectedOptions[0].textContent.replace(/^範本：/, '') };
+                syncShare();
+              });
+            }).catch(App.handleError);
+          });
+          $('#ln-copy').addEventListener('click', function () {
+            if (!text.value.trim()) {
+              App.toast('還沒有內容', 'error');
+              return;
+            }
+            App.copyText(text.value).then(function (ok) {
+              if (ok) App.toast('已複製，可以貼到 LINE 了');
+              else { text.select(); App.toast('請長按文字手動複製', 'error'); }
+            });
+          });
+          $('#ln-share').addEventListener('click', function (e) {
+            if (text.value.trim()) return;
+            e.preventDefault();
+            App.toast('還沒有內容', 'error');
+          });
+          if (canPush) $('#ln-push').addEventListener('click', function () { push(this); });
+          if (page.configured) $('#ln-quota').addEventListener('click', function () { quota(this, $('#ln-quota-box')); });
+          syncKind();
+
+          function push(btn) {
+            var value = text.value.trim();
+            if (!value) {
+              App.toast('還沒有內容', 'error');
+              return;
+            }
+            var form = document.createElement('form');
+            form.className = 'stack';
+            form.innerHTML = '<div class="checks">' + page.groups.map(function (g) {
+              return '<label class="check"><input type="checkbox" name="groupIds" data-multi value="' + esc(g.id) + '" checked> ' + esc(g.name) + '</label>';
+            }).join('') + '</div><p class="muted small" style="margin:0">群組裡每位成員都會算一則訊息額度；推播後無法收回。</p>' +
+              '<pre class="mail-text push-preview">' + esc(value) + '</pre>';
+            App.modal.open({
+              title: '推播到 LINE 群組',
+              body: form,
+              actions: [
+                { label: '取消', value: null },
+                {
+                  label: '推播', value: 'ok', cls: 'btn-primary', primary: true, validate: function () {
+                    if (App.formValues(form).groupIds.length) return true;
+                    App.toast('請勾選群組', 'error');
+                    return false;
+                  }
+                }
+              ]
+            }).then(function (v) {
+              if (v !== 'ok') return;
+              var ids = App.formValues(form).groupIds;
+              var sent = { groupIds: ids, text: value, templateId: composed ? composed.templateId : '', label: composed && !composed.templateId ? composed.label : '' };
+              return App.withButton(btn, function () {
+                return App.api('line.send', sent).then(function (res) {
+                  var failed = res.results.filter(function (r) { return !r.ok; });
+                  if (failed.length) App.toast(failed.map(function (r) { return r.name + '：' + r.error; }).join('；'), 'error');
+                  else App.toast('已推播到 ' + res.results.length + ' 個群組');
+                });
+              });
+            }).catch(App.handleError);
+          }
+        }
+
+        function quota(btn, out) {
+          App.withButton(btn, function () {
+            return App.api('line.quota').then(function (q) {
+              var used = q.limit === null ? '本月已用 ' + App.fmt(q.used) + ' 則（方案不限則數）' :
+                '本月已用 ' + App.fmt(q.used) + ' ／ ' + App.fmt(q.limit) + ' 則，還剩 ' + App.fmt(q.remaining) + ' 則';
+              out.innerHTML = '<p style="margin:0 0 6px"><b>' + esc(used) + '</b></p>' + (q.groups.length ? '<ul class="list">' + q.groups.map(function (g) {
+                return '<li><span>' + esc(g.name) + '</span><span class="muted">' + (g.count === null ? '人數查不到' : g.count + ' 人・推播一次約用 ' + g.count + ' 則') + '</span></li>';
+              }).join('') + '</ul>' : '');
+            });
+          }).catch(App.handleError);
+        }
+
+        // ---------- 機器人設定 ----------
+
+        function renderBot(box) {
+          App.skeleton(box, 8);
+          App.api('line.settings').then(draw).catch(function (err) {
+            App.errorState(box, err);
+            App.handleError(err);
+          });
+
+          function draw(s) {
+            page = null; // 群組或設定變了，發送分頁重新載入
+            box.innerHTML = '<section class="card stack"><div class="card-head"><h2>1. Channel access token</h2>' +
+              (s.configured ? '<span class="tag green">已設定' + (s.botName ? '：' + esc(s.botName) : '') + '</span>' : '<span class="tag gray">未設定</span>') + '</div>' +
+              '<p class="muted small" style="margin:0">LINE Developers → 你的 Messaging API channel →「Messaging API」分頁最下方，發行 Channel access token（long-lived）後貼上。Token 只存在伺服器，之後不會再顯示。</p>' +
+              '<form class="link-box" id="ln-token-form"><input type="password" name="token" autocomplete="off" placeholder="' +
+              (s.configured ? '已設定；要更換才需要貼上' : '貼上 Channel access token') + '"><button type="submit" class="btn btn-primary">儲存並驗證</button>' +
+              (s.configured ? '<button type="button" class="btn btn-danger" id="ln-token-clear">移除</button>' : '') + '</form></section>' +
+              '<section class="card stack"><div class="card-head"><h2>2. Webhook 網址</h2></div>' +
+              '<p class="muted small" style="margin:0">把網址貼到「Messaging API」分頁的 Webhook URL，並開啟 Use webhook；到 LINE Official Account Manager 關閉「自動回應訊息」、允許「加入群組」。' +
+              '按 Verify 可能顯示錯誤（Google 會轉址），只要下一步綁定成功就沒問題。</p>' +
+              (s.webhookUrl ? '<div class="link-box"><input type="text" readonly value="' + esc(s.webhookUrl) + '"><button type="button" class="btn" id="ln-copy-hook">複製</button></div>' :
+                '<p class="notice" style="margin:0">還沒部署成網頁應用程式，部署後這裡會顯示網址。</p>') + '</section>' +
+              '<section class="card stack"><div class="card-head"><h2>3. 綁定群組</h2>' +
+              (s.configured ? '<button type="button" class="btn btn-primary btn-sm" id="ln-bind">產生綁定碼</button>' : '') + '</div>' +
+              '<p class="muted small" style="margin:0">把官方帳號邀請進分會的 LINE 群組，按「產生綁定碼」，10 分鐘內在群組輸入「綁定 六位數字」。</p>' +
+              '<div id="ln-code"></div>' + (s.groups.length ? '<ul class="list" id="ln-groups">' + s.groups.map(function (g) {
+                return '<li data-id="' + esc(g.id) + '"><span><b>' + esc(g.name) + '</b><br><span class="muted small">' +
+                  esc('綁定於 ' + String(g.boundAt || '').slice(0, 16) + (g.boundBy ? '・' + g.boundBy : '')) + '</span></span>' +
+                  '<button type="button" class="btn btn-sm btn-danger" data-unbind>解除綁定</button></li>';
+              }).join('') + '</ul>' : '<p class="empty">還沒有綁定的群組</p>') + '</section>' +
+              '<section class="card stack"><div class="card-head"><h2>4. 每週提醒自動推播</h2></div>' +
+              '<label class="check"><input type="checkbox" id="ln-cron"' + (s.cron ? ' checked' : '') + '> 每小時檢查一次，把勾選「推播到 LINE」的每週提醒推到所有已綁定群組</label>' +
+              '<p class="muted small" style="margin:0">目前有 ' + s.pushReminders + ' 則提醒勾選推播（系統設定 → 每週提醒）。每則提醒在設定時間後 90 分鐘內推出，每天最多一次。</p></section>';
+            var $ = function (sel) { return box.querySelector(sel); };
+
+            $('#ln-token-form').addEventListener('submit', function (e) {
+              e.preventDefault();
+              var token = this.token.value.trim();
+              if (!token) {
+                App.toast('請貼上 Channel access token', 'error');
+                return;
+              }
+              App.withButton(this.querySelector('[type=submit]'), function () {
+                return App.api('line.saveToken', { token: token }).then(function (res) {
+                  App.toast('已驗證並儲存：' + (res.botName || 'LINE 官方帳號'));
+                  draw(res);
+                });
+              }).catch(App.handleError);
+            });
+            var clear = $('#ln-token-clear');
+            if (clear) {
+              clear.addEventListener('click', function () {
+                App.modal.confirm('移除 Token', '移除後就不能推播，也不會自動推播每週提醒。已綁定的群組會保留。', '移除').then(function (ok) {
+                  if (!ok) return;
+                  return App.api('line.saveToken', { clear: true }).then(function (res) {
+                    App.toast('已移除');
+                    draw(res);
+                  });
+                }).catch(App.handleError);
+              });
+            }
+            var hook = $('#ln-copy-hook');
+            if (hook) {
+              hook.addEventListener('click', function () {
+                App.copyText(s.webhookUrl).then(function (ok) { App.toast(ok ? '已複製 Webhook 網址' : '請手動複製', ok ? '' : 'error'); });
+              });
+            }
+            var bind = $('#ln-bind');
+            if (bind) {
+              bind.addEventListener('click', function () {
+                App.withButton(bind, function () {
+                  return App.api('line.bind').then(function (r) {
+                    $('#ln-code').innerHTML = '<div class="notice stack"><div>請在 ' + r.minutes + ' 分鐘內到群組輸入：</div><div class="bind-code">綁定 ' + esc(r.code) + '</div>' +
+                      '<div class="toolbar"><button type="button" class="btn btn-sm" data-copy-code>複製</button><button type="button" class="btn btn-sm btn-primary" data-reload>綁定好了，重新整理</button></div></div>';
+                    $('[data-copy-code]').addEventListener('click', function () {
+                      App.copyText('綁定 ' + r.code).then(function (ok) { App.toast(ok ? '已複製，到群組貼上送出' : '請手動輸入', ok ? '' : 'error'); });
+                    });
+                    $('[data-reload]').addEventListener('click', function () { renderBot(box); });
+                  });
+                }).catch(App.handleError);
+              });
+            }
+            var groupList = $('#ln-groups');
+            if (groupList) groupList.addEventListener('click', function (e) {
+              var b = e.target.closest('[data-unbind]');
+              if (!b) return;
+              var id = b.closest('li').getAttribute('data-id');
+              var g = s.groups.filter(function (x) { return x.id === id; })[0];
+              App.modal.confirm('解除綁定', '確定解除「' + (g ? g.name : '這個群組') + '」？之後不會再推播到這個群組（機器人仍在群組裡，可以從 LINE 移除）。', '解除綁定').then(function (ok) {
+                if (!ok) return;
+                return App.api('line.unbind', { id: id }).then(function (res) {
+                  App.toast('已解除綁定');
+                  draw(res);
+                });
+              }).catch(App.handleError);
+            });
+            $('#ln-cron').addEventListener('change', function () {
+              var cb = this;
+              var want = cb.checked;
+              cb.disabled = true;
+              App.api('line.cron', { enabled: want }).then(function (res) {
+                App.toast(res.cron ? '已開啟每週提醒自動推播' : '已關閉自動推播');
+                cb.checked = res.cron;
+              }).catch(function (err) {
+                cb.checked = !want;
+                App.handleError(err);
+              }).finally(function () { cb.disabled = false; });
+            });
+          }
+        }
+
+        App.tabbedBody(el, tabs, function (tab, box) {
+          if (tab === 'send') renderSend(box);
+          else if (tab === 'templates') App.templateManager(box, 'LINE', function () { page = null; });
+          else if (tab === 'log') App.sendLogTable(box, 'LINE');
+          else renderBot(box);
+        });
+      }
+    });
+  })();
+</script>

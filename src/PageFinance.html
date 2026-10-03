@@ -1,0 +1,351 @@
+<script>
+  /* 財務中心：收支帳（記帳、作廢）、會員月費繳納表、月結 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    var TABS = [['ledger', '收支帳'], ['dues', '月費繳納'], ['monthly', '月結']];
+
+    function monthText(month) {
+      return month.slice(0, 4) + ' 年 ' + Number(month.slice(5, 7)) + ' 月';
+    }
+
+    function signedMoney(e) {
+      return (e.type === '支出' ? '−' : '+') + App.fmt(e.amount);
+    }
+
+    function stat(label, value) {
+      return '<div class="stat-box"><b>' + esc(value) + '</b><span>' + esc(label) + '</span></div>';
+    }
+
+    function yearOptions(selected, thisYear) {
+      var y = Number(thisYear);
+      return [y - 2, y - 1, y, y + 1].map(function (v) {
+        return '<option value="' + v + '"' + (String(v) === String(selected) ? ' selected' : '') + '>' + v + ' 年</option>';
+      }).join('');
+    }
+
+    function entriesTable(entries, canManage) {
+      if (!entries.length) return '<p class="muted" style="margin:0">這個月還沒有帳</p>';
+      return '<div class="table-wrap"><table class="data"><thead><tr><th>日期</th><th>類型</th><th>科目</th><th>對象</th><th>說明</th>' +
+        '<th class="num">金額</th><th>經手人</th><th></th></tr></thead><tbody>' + entries.map(function (e) {
+          var status = e.voided ?
+            '<span class="tag gray" title="' + esc('作廢原因：' + e.voidReason + '（' + e.voidedBy + ' ' + e.voidedAt + '）') + '">已作廢</span> <span class="muted small">' + esc(e.voidReason) + '</span>' :
+            (canManage ? '<button type="button" class="btn btn-sm" data-void="' + esc(e.id) + '">作廢</button>' : '');
+          return '<tr' + (e.voided ? ' class="dim"' : '') + '><td>' + esc(e.date.slice(5).replace('-', '/')) + '</td><td>' + esc(e.type) + '</td>' +
+            '<td>' + esc(e.category) + '</td><td>' + esc(e.party) + '</td><td>' + esc(e.note) + '</td>' +
+            '<td class="num">' + esc(signedMoney(e)) + '</td><td>' + esc(e.handledBy) + '</td><td class="keep">' + status + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+
+    function categoryTable(rows) {
+      return '<div class="table-wrap"><table class="data"><thead><tr><th>類型</th><th>科目</th><th class="num">筆數</th><th class="num">金額</th></tr></thead><tbody>' +
+        rows.map(function (c) {
+          return '<tr><td>' + esc(c.type) + '</td><td>' + esc(c.category) + '</td><td class="num">' + c.count + '</td><td class="num">' + esc(App.money(c.amount)) + '</td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+
+    App.registerPage('finance', {
+      title: '財務中心',
+      perm: 'finance.ledger.view',
+      render: function (el, params) {
+        var canLedger = App.can('finance.ledger.manage');
+        var canDues = App.can('finance.dues.manage');
+        var today = App.session.today || App.todayIso();
+        var thisMonth = today.slice(0, 7);
+        var state = { tab: params.tab || 'ledger', month: thisMonth, year: thisMonth.slice(0, 4), ledger: null, dues: null, seq: 0 };
+        el.innerHTML = '<div class="page-head"><div><h1>財務中心</h1><p>收支帳、會員月費與月結；寫錯的帳請「作廢」後重記，原始紀錄會保留</p></div></div>' +
+          '<div class="stack"><div><div class="subtabs" id="fi-tabs">' + TABS.map(function (t) {
+            return '<button type="button" data-tab="' + t[0] + '">' + t[1] + '</button>';
+          }).join('') + '</div></div><div class="stack" id="fi-body"></div></div>';
+        var body = el.querySelector('#fi-body');
+
+        function setTab(tab) {
+          state.tab = tab;
+          App.$$('#fi-tabs button', el).forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === tab); });
+          load();
+        }
+
+        /** 只套用最後一次請求的結果，避免快速切換時舊資料蓋掉新的 */
+        function request(action, data, apply) {
+          var seq = ++state.seq;
+          App.skeleton(body, 8);
+          return App.api(action, data).then(function (res) {
+            if (seq === state.seq) apply(res);
+          }).catch(function (err) {
+            if (seq !== state.seq) return;
+            App.errorState(body, err);
+            App.handleError(err);
+          });
+        }
+
+        function load() {
+          if (state.tab === 'ledger') return request('finance.page', { month: state.month }, function (res) { state.ledger = res; renderLedger(); });
+          if (state.tab === 'dues') return request('finance.dues', { year: state.year }, function (res) { state.dues = res; renderDues(); });
+          return request('finance.page', { month: state.year + '-01' }, function (res) { state.ledger = null; renderMonthly(res); });
+        }
+
+        // ---------- 收支帳 ----------
+
+        function renderLedger() {
+          var d = state.ledger;
+          var isCurrent = d.month === thisMonth;
+          body.innerHTML = '<div class="toolbar"><input type="month" id="fi-month" value="' + esc(d.month) + '" aria-label="月份" style="max-width:200px">' +
+            (canLedger ? '<button type="button" class="btn btn-primary" data-add="收入">＋ 記收入</button><button type="button" class="btn" data-add="支出">＋ 記支出</button>' : '') + '</div>' +
+            '<section class="card"><div class="stat-row" style="margin-top:0">' +
+            stat(monthText(d.month) + '收入', App.money(d.summary.income)) + stat('支出', App.money(d.summary.expense)) +
+            stat('結餘', App.money(d.summary.net)) + stat(isCurrent ? '目前餘額' : '月底餘額', App.money(isCurrent ? d.balance : d.summary.balance)) +
+            '</div></section>' +
+            (d.byCategory.length ? '<section class="card"><div class="card-head"><h2>分類統計</h2><span class="muted small">不含作廢</span></div>' + categoryTable(d.byCategory) + '</section>' : '') +
+            '<section class="card"><div class="card-head"><h2>' + esc(monthText(d.month)) + ' 明細</h2><span class="muted small">' + d.entries.length + ' 筆</span></div>' +
+            entriesTable(d.entries, canLedger) + '</section>';
+          body.querySelector('#fi-month').addEventListener('change', function () {
+            if (!/^\d{4}-\d{2}$/.test(this.value)) return;
+            state.month = this.value;
+            load();
+          });
+        }
+
+        function addEntry(type) {
+          var d = state.ledger;
+          var cats = type === '收入' ? d.categories.income : d.categories.expense;
+          var form = document.createElement('form');
+          form.className = 'form-grid';
+          form.innerHTML = App.field('日期', '<input type="date" name="date" value="' + esc(today) + '">', true) +
+            App.field('科目', '<select name="category">' + cats.map(function (c) { return '<option>' + esc(c) + '</option>'; }).join('') + '</select>', true) +
+            App.field('金額', '<input type="number" name="amount" min="0" step="any" inputmode="decimal">', true) +
+            App.field(type === '收入' ? '付款人' : '付給', '<input type="text" name="party" maxlength="40">') +
+            App.field('說明', '<input type="text" name="note" maxlength="200" placeholder="例如：10 月場地費">', false, '', 'full') +
+            '<button type="submit" hidden></button>';
+          App.modal.open({
+            title: '記一筆' + type,
+            body: form,
+            actions: [
+              { label: '取消', value: null },
+              {
+                label: '記帳', value: 'ok', cls: 'btn-primary', primary: true, validate: function () {
+                  var v = App.formValues(form);
+                  if (!v.date) { App.toast('請選擇日期', 'error'); return false; }
+                  if (!(Number(v.amount) > 0)) { App.toast('請填大於 0 的金額', 'error'); return false; }
+                  return true;
+                }
+              }
+            ]
+          }).then(function (v) {
+            if (v !== 'ok') return;
+            var data = App.formValues(form);
+            data.type = type;
+            return App.api('finance.create', data).then(function (e) {
+              App.toast('已記帳：' + e.category + ' ' + App.money(e.amount));
+              if (e.date.slice(0, 7) !== state.month) state.month = e.date.slice(0, 7);
+              load();
+            });
+          }).catch(App.handleError);
+        }
+
+        function voidEntry(e) {
+          var form = document.createElement('form');
+          form.className = 'stack';
+          var linked = e.category === '會員月費' && e.relatedId ? '這筆是會員月費，同一次繳的月份會一起作廢。' :
+            /^G/.test(e.relatedId || '') ? '這筆是報名繳費自動記的帳，報名名單的「已繳費」會一起取消。' : '';
+          form.innerHTML = '<p style="margin:0">' + esc(e.date + '　' + e.type + '　' + e.category + '　' + App.money(e.amount) + (e.party ? '　' + e.party : '')) + '</p>' +
+            (linked ? '<p class="notice" style="margin:0">' + esc(linked) + '</p>' : '') +
+            App.field('作廢原因', '<input type="text" name="reason" maxlength="100" placeholder="例如：金額打錯，已重新記帳">', true) +
+            '<button type="submit" hidden></button>';
+          App.modal.open({
+            title: '作廢這筆帳',
+            body: form,
+            actions: [
+              { label: '取消', value: null },
+              {
+                label: '作廢', value: 'ok', cls: 'btn-danger', primary: true, validate: function () {
+                  if (App.formValues(form).reason) return true;
+                  App.toast('請填寫作廢原因', 'error');
+                  return false;
+                }
+              }
+            ]
+          }).then(function (v) {
+            if (v !== 'ok') return;
+            return App.api('finance.void', { id: e.id, reason: App.formValues(form).reason }).then(function () {
+              App.toast('已作廢');
+              load();
+            });
+          }).catch(App.handleError);
+        }
+
+        // ---------- 月費繳納 ----------
+
+        function duesCell(d, m, month) {
+          var c = m.cells[month];
+          var key = esc(m.id) + '|' + month;
+          if (c) {
+            return '<td class="dues-cell paid"><button type="button" data-cell="' + key + '" title="' + esc('繳費日 ' + c.paidDate + '・' + App.money(c.amount)) + '">✓</button></td>';
+          }
+          if (m.joinMonth && month < m.joinMonth) return '<td class="dues-cell na" title="尚未入會">·</td>';
+          var due = m.active && month <= d.currentMonth && month >= d.startMonth;
+          if (!canDues || !m.active) return '<td class="dues-cell' + (due ? ' due' : '') + '">' + (due ? '未繳' : '') + '</td>';
+          return '<td class="dues-cell' + (due ? ' due' : '') + '"><button type="button" data-cell="' + key + '" title="繳費">' + (due ? '未繳' : '＋') + '</button></td>';
+        }
+
+        function renderDues() {
+          var d = state.dues;
+          var head = '<th>會員</th>' + d.months.map(function (mo) { return '<th data-month-head="' + mo + '">' + Number(mo.slice(5)) + '月</th>'; }).join('');
+          var rows = d.members.map(function (m) {
+            return '<tr><td><b>' + esc(m.name) + '</b>' + (m.active ? '' : ' <span class="tag gray">' + esc(m.status) + '</span>') + '</td>' +
+              d.months.map(function (mo) { return duesCell(d, m, mo); }).join('') + '</tr>';
+          }).join('');
+          var total = '<tr class="total"><td>已繳人數／金額</td>' + d.totals.map(function (t) {
+            return '<td>' + (t.count ? t.count + '<br><span class="small">' + esc(App.fmt(t.amount)) + '</span>' : '') + '</td>';
+          }).join('') + '</tr>';
+          body.innerHTML = '<div class="toolbar"><select id="fi-year" aria-label="年度" style="max-width:140px">' + yearOptions(d.year, thisMonth.slice(0, 4)) + '</select>' +
+            '<span class="muted">' + (d.monthlyDues ? '每月會費 ' + esc(App.money(d.monthlyDues)) : '還沒設定每月會費（系統設定 → 費用與財務）') + '</span></div>' +
+            '<p class="muted small" style="margin:0">✓ 已繳；「未繳」是開始記月費（' + esc(d.startMonth) + '）以後、到這個月為止還沒繳的月份；· 是入會前。' +
+            (canDues ? '點格子可以繳費（一次可以勾選好幾個月）或查看、作廢。' : '') + '</p>' +
+            (d.members.length ? '<div class="table-wrap"><table class="data dues"><thead><tr>' + head + '</tr></thead><tbody>' + rows + total + '</tbody></table></div>' :
+              '<p class="empty">會員名冊還沒有在籍會員</p>');
+          body.querySelector('#fi-year').addEventListener('change', function () {
+            state.year = this.value;
+            load();
+          });
+          // 手機上表格很寬：捲到這個月，讓最近幾個月在畫面上
+          var wrap = body.querySelector('.table-wrap');
+          var th = body.querySelector('[data-month-head="' + d.currentMonth + '"]');
+          if (wrap && th) wrap.scrollLeft = Math.max(0, th.offsetLeft + th.offsetWidth - wrap.clientWidth + 8);
+        }
+
+        function payDues(m, month) {
+          var d = state.dues;
+          var open = d.months.filter(function (mo) { return !m.cells[mo] && !(m.joinMonth && mo < m.joinMonth); });
+          var form = document.createElement('form');
+          form.className = 'form-grid';
+          form.innerHTML = '<div class="field full"><span>月份 <b class="req">*</b></span><div class="checks">' + open.map(function (mo) {
+            return '<label class="check"><input type="checkbox" name="months" data-multi value="' + mo + '"' + (mo === month ? ' checked' : '') + '> ' + Number(mo.slice(5)) + ' 月</label>';
+          }).join('') + '</div></div>' +
+            App.field('每月金額', '<input type="number" name="amount" min="0" step="any" inputmode="decimal" value="' + esc(d.monthlyDues || '') + '">', true) +
+            App.field('繳費日', '<input type="date" name="paidDate" value="' + esc(today) + '">', true) +
+            '<p class="muted full" style="margin:0" id="fi-sum"></p><button type="submit" hidden></button>';
+          var sum = form.querySelector('#fi-sum');
+          function update() {
+            var v = App.formValues(form);
+            var total = v.months.length * (Number(v.amount) || 0);
+            sum.textContent = v.months.length ? '合計 ' + App.money(total) + '（' + v.months.length + ' 個月），會記一筆「會員月費」收入' : '請勾選要繳的月份';
+          }
+          form.addEventListener('input', update);
+          form.addEventListener('change', update);
+          update();
+          App.modal.open({
+            title: m.name + ' 繳月費（' + d.year + ' 年）',
+            body: form,
+            actions: [
+              { label: '取消', value: null },
+              {
+                label: '確認收款', value: 'ok', cls: 'btn-primary', primary: true, validate: function () {
+                  var v = App.formValues(form);
+                  if (!v.months.length) { App.toast('請勾選要繳的月份', 'error'); return false; }
+                  if (!(Number(v.amount) > 0)) { App.toast('請填每月金額', 'error'); return false; }
+                  return true;
+                }
+              }
+            ]
+          }).then(function (v) {
+            if (v !== 'ok') return;
+            var data = App.formValues(form);
+            data.memberId = m.id;
+            return App.api('finance.payDues', data).then(function (res) {
+              App.toast('已收款 ' + App.money(res.ledger.amount));
+              load();
+            });
+          }).catch(App.handleError);
+        }
+
+        function showPaid(m, month) {
+          var c = m.cells[month];
+          var same = state.dues.months.filter(function (mo) { return m.cells[mo] && m.cells[mo].ledgerId === c.ledgerId; });
+          var form = document.createElement('form');
+          form.className = 'stack';
+          form.innerHTML = '<ul class="list">' + [
+            ['同一次繳的月份', same.map(function (mo) { return Number(mo.slice(5)) + '月'; }).join('、')],
+            ['每月金額', App.money(c.amount)], ['繳費日', c.paidDate], ['經手人', c.handledBy || '—']
+          ].map(function (r) { return '<li><span class="muted">' + esc(r[0]) + '</span><span>' + esc(r[1]) + '</span></li>'; }).join('') + '</ul>' +
+            (canDues ? App.field('作廢原因', '<input type="text" name="reason" maxlength="100" placeholder="要作廢這筆繳費才需要填">', false,
+              '作廢會連同同一次繳的所有月份與那筆收入一起作廢') : '') + '<button type="submit" hidden></button>';
+          var actions = [{ label: '關閉', value: null }];
+          if (canDues) {
+            actions.push({
+              label: '作廢這筆繳費', value: 'void', cls: 'btn-danger', validate: function () {
+                if (App.formValues(form).reason) return true;
+                App.toast('請填寫作廢原因', 'error');
+                return false;
+              }
+            });
+          }
+          App.modal.open({ title: m.name + ' ' + Number(month.slice(5)) + ' 月月費', body: form, actions: actions }).then(function (v) {
+            if (v !== 'void') return;
+            return App.api('finance.voidDues', { id: c.id, reason: App.formValues(form).reason }).then(function () {
+              App.toast('已作廢');
+              load();
+            });
+          }).catch(App.handleError);
+        }
+
+        // ---------- 月結 ----------
+
+        function renderMonthly(d) {
+          var sum = { income: 0, expense: 0 };
+          var rows = d.monthly.map(function (m) {
+            sum.income += m.income;
+            sum.expense += m.expense;
+            if (m.future) return '<tr class="dim-row"><td>' + Number(m.month.slice(5)) + ' 月</td><td class="num" colspan="4"></td></tr>';
+            return '<tr class="clickable" data-month="' + esc(m.month) + '"><td>' + Number(m.month.slice(5)) + ' 月</td><td class="num">' + esc(App.fmt(m.income)) + '</td>' +
+              '<td class="num">' + esc(App.fmt(m.expense)) + '</td><td class="num">' + esc(App.fmt(m.net)) + '</td><td class="num">' + esc(App.fmt(m.balance)) + '</td></tr>';
+          }).join('');
+          body.innerHTML = '<div class="toolbar"><select id="fi-year" aria-label="年度" style="max-width:140px">' + yearOptions(d.year, thisMonth.slice(0, 4)) + '</select>' +
+            '<span class="muted">期初餘額 ' + esc(App.money(d.openingBalance)) + '（系統設定 → 費用與財務）・目前餘額 ' + esc(App.money(d.balance)) + '</span></div>' +
+            '<section class="card"><div class="card-head"><h2>' + esc(d.year) + ' 年月結</h2><span class="muted small">不含作廢；點月份看明細</span></div>' +
+            '<div class="table-wrap"><table class="data"><thead><tr><th>月份</th><th class="num">收入</th><th class="num">支出</th><th class="num">結餘</th><th class="num">月底餘額</th></tr></thead><tbody>' +
+            rows + '<tr class="total"><td>全年</td><td class="num">' + esc(App.fmt(sum.income)) + '</td><td class="num">' + esc(App.fmt(sum.expense)) + '</td>' +
+            '<td class="num">' + esc(App.fmt(sum.income - sum.expense)) + '</td><td></td></tr></tbody></table></div></section>';
+          body.querySelector('#fi-year').addEventListener('change', function () {
+            state.year = this.value;
+            load();
+          });
+        }
+
+        el.querySelector('#fi-tabs').addEventListener('click', function (e) {
+          var b = e.target.closest('[data-tab]');
+          if (b) setTab(b.getAttribute('data-tab'));
+        });
+        body.addEventListener('click', function (e) {
+          var add = e.target.closest('[data-add]');
+          if (add && state.ledger) {
+            addEntry(add.getAttribute('data-add'));
+            return;
+          }
+          var vo = e.target.closest('[data-void]');
+          if (vo && state.ledger) {
+            var entry = state.ledger.entries.filter(function (x) { return x.id === vo.getAttribute('data-void'); })[0];
+            if (entry) voidEntry(entry);
+            return;
+          }
+          var cell = e.target.closest('[data-cell]');
+          if (cell && state.dues) {
+            var parts = cell.getAttribute('data-cell').split('|');
+            var m = state.dues.members.filter(function (x) { return x.id === parts[0]; })[0];
+            if (!m) return;
+            if (m.cells[parts[1]]) showPaid(m, parts[1]);
+            else payDues(m, parts[1]);
+            return;
+          }
+          var row = e.target.closest('tr[data-month]');
+          if (row) {
+            state.month = row.getAttribute('data-month');
+            setTab('ledger');
+          }
+        });
+        setTab(state.tab);
+      }
+    });
+  })();
+</script>

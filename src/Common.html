@@ -127,7 +127,7 @@
       return (Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
     };
     App.money = function (n) {
-      return 'NT$' + App.fmt(n);
+      return (Number(n) < 0 ? '−' : '') + 'NT$' + App.fmt(Math.abs(Number(n) || 0));
     };
 
     // ---------- 日期 ----------

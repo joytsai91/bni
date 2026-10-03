@@ -471,6 +471,62 @@ function templateKeys(text) {
   return keys;
 }
 
+// ---------- 月份（財務） ----------
+
+/** 月份統一成 yyyy-MM：接受 2026-10、2026/10、2026年10月，以及試算表自動轉成日期的 2026-10-01 */
+function parseMonth(value) {
+  const m = /^(\d{4})\s*[-/.年]\s*(\d{1,2})\s*月?(?:\s*[-/.]\s*\d{1,2}(?:\s+[\d:]+)?)?$/.exec(String(value == null ? '' : value).trim());
+  if (!m || Number(m[2]) < 1 || Number(m[2]) > 12) return '';
+  return m[1] + '-' + pad2_(Number(m[2]));
+}
+
+function addMonthsTo(month, n) {
+  const total = Number(month.slice(0, 4)) * 12 + Number(month.slice(5, 7)) - 1 + n;
+  return Math.floor(total / 12) + '-' + pad2_(total % 12 + 1);
+}
+
+/** 連續月份寫成「2026-10～2026-12（3 個月）」，不連續就用頓號列出 */
+function monthsLabel(months) {
+  const list = months.slice().sort();
+  if (list.length <= 1) return list.join('');
+  const consecutive = list.every(function (m, i) { return i === 0 || addMonthsTo(list[i - 1], 1) === m; });
+  return consecutive ? list[0] + '～' + list[list.length - 1] + '（' + list.length + ' 個月）' : list.join('、');
+}
+
+/** 'HH:mm' 換成當天第幾分鐘 */
+function minutesOf(time) {
+  const t = normalizeTime(time);
+  return t ? Number(t.slice(0, 2)) * 60 + Number(t.slice(3, 5)) : -1;
+}
+
+// ---------- 出席結果 ----------
+
+/**
+ * 例會出席結果文字（簽到頁、LINE 小助理共用）。
+ * members：[{ name, status: P/L/S/M/A 或空白, substitute }]；guests：[{ name, checkedInAt }]
+ */
+function buildAttendanceText(chapterName, dateLabel, members, guests) {
+  const c = { P: 0, L: 0, S: 0, M: 0, A: 0, none: 0 };
+  const names = { L: [], S: [], M: [], A: [], none: [] };
+  members.forEach(function (m) {
+    const k = m.status && Object.prototype.hasOwnProperty.call(c, m.status) ? m.status : 'none';
+    c[k] += 1;
+    if (names[k]) names[k].push(k === 'S' && m.substitute ? m.name + '（代理人：' + m.substitute + '）' : m.name);
+  });
+  const lines = [
+    '【' + chapterName + '】' + dateLabel + ' 出席結果',
+    '會員 ' + members.length + ' 位：出席 ' + c.P + '、遲到 ' + c.L + '、代理 ' + c.S + '、病假 ' + c.M + '、缺席 ' + c.A +
+      (c.none ? '、未簽到 ' + c.none : '')
+  ];
+  [['L', '遲到'], ['S', '代理'], ['M', '病假'], ['A', '缺席'], ['none', '未簽到']].forEach(function (x) {
+    if (names[x[0]].length) lines.push(x[1] + '：' + names[x[0]].join('、'));
+  });
+  const arrived = guests.filter(function (g) { return g.checkedInAt; });
+  lines.push('來賓 ' + guests.length + ' 位，到場 ' + arrived.length + ' 位' +
+    (arrived.length ? '：' + arrived.map(function (g) { return g.name; }).join('、') : ''));
+  return lines.join('\n');
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     PALMS_FIELDS, PALMS_LABELS, WEEKDAY_LABELS,
@@ -479,6 +535,7 @@ if (typeof module !== 'undefined' && module.exports) {
     parseWeekday, weekdayOf, addDays, nextMeetingDate, upcomingMeetings, normalizeTime, checkinStatus,
     toSheetText, normalizePhone, isActiveMember,
     meetingDatesBetween, timeRangeLabel, parseList, categoryKey, categoriesConflict,
-    permissionMatches, resolvePermissions, hasPermission, fillTemplate, templateKeys
+    permissionMatches, resolvePermissions, hasPermission, fillTemplate, templateKeys,
+    parseMonth, addMonthsTo, monthsLabel, minutesOf, buildAttendanceText
   };
 }

@@ -108,7 +108,7 @@ function addRegistration_(event, data, opts) {
     const created = t.rows.filter(function (r) { return r.id === row.id; })[0];
     const changes = {};
     if (opts.checkIn) changes.checkedInAt = nowStamp_();
-    if (data.paid) Object.assign(changes, paymentChanges_(created, true, opts.ctx));
+    if (data.paid && opts.ctx) Object.assign(changes, paymentChanges_(created, true, opts.ctx)); // 公開報名頁不能自己標記已繳費
     if (Object.keys(changes).length) applyRegistrationChanges_(t, created, changes, opts.ctx);
     return { registration: regOut_(created), duplicate: false };
   });
@@ -138,11 +138,20 @@ function addWalkin_(d, ctx) {
   return addRegistration_(getEvent_(d.eventId), d, { source: '現場', role: d.role, memberId: d.memberId, checkIn: true, ignoreCapacity: true, ctx: ctx });
 }
 
-/** 繳費／取消繳費要改的欄位（財務中心會在這裡接上自動入帳） */
-function paymentChanges_(row, paid, ctx) {
+/**
+ * 繳費／取消繳費要改的欄位（呼叫端在鎖內）：
+ * 有收費時自動在收支帳記一筆收入；取消繳費時作廢那筆帳，reason 是作廢原因。
+ */
+function paymentChanges_(row, paid, ctx, reason) {
   if (paid === !!row.paid) return {};
-  if (!paid) return { paid: '', paidAmount: 0 };
-  return { paid: '是', paidAmount: getEvent_(row.eventId).fee || 0 };
+  if (!paid) {
+    voidRegistrationPayment_(row, reason || '取消繳費', ctx);
+    return { paid: '', paidAmount: 0, ledgerId: '' };
+  }
+  const event = getEvent_(row.eventId);
+  const amount = event.fee || 0;
+  const entry = amount > 0 ? recordRegistrationPayment_(row, event, amount, ctx) : null;
+  return { paid: '是', paidAmount: amount, ledgerId: entry ? entry.id : '' };
 }
 
 /** 寫入變更，並觸發簽到後的連動（例如來賓追蹤） */
@@ -183,7 +192,7 @@ function deleteRegistration_(d, ctx) {
     const t = registrationsTable_();
     const row = t.rows.filter(function (r) { return r.id === d.id; })[0];
     if (!row) throw new Error('找不到這筆報名，請重新整理');
-    if (row.paid) applyRegistrationChanges_(t, row, paymentChanges_(row, false, ctx), ctx);
+    if (row.paid) applyRegistrationChanges_(t, row, paymentChanges_(row, false, ctx, '刪除報名'), ctx);
     if (row.checkedInAt) applyRegistrationChanges_(t, row, { checkedInAt: '' }, ctx);
     Db.softDelete(t, row._row);
     return true;

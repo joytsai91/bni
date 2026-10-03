@@ -75,6 +75,33 @@ const LEAD_ACTIVE_STAGES = ['新來賓', '已聯繫', '有意願', '申請中'];
 
 const TARGET_PRIORITIES = ['高', '中', '低'];
 
+const INCOME_CATEGORIES = ['來賓費', '會員月費', '活動收入', '其他收入'];
+const EXPENSE_CATEGORIES = ['場地費', '餐費', '活動支出', '文具印刷', '禮品', '其他支出'];
+
+/** 訊息範本可用的欄位（{{欄位}} 會自動換成資料） */
+const TEMPLATE_FIELDS = [
+  '姓名', '公司', '專業別', '邀請人', '到期日', '活動名稱', '活動日期', '活動時間', '活動地點', '報名連結',
+  '來賓人數', '來賓名單', '已到來賓', '例會日期', '例會時間', '例會地點', '分會名稱'
+];
+
+/** 第一次建立「訊息範本」表時放進去的範本：管道、名稱、主旨、內容 */
+const DEFAULT_TEMPLATES = [
+  ['Email', '感謝來賓蒞臨', '感謝您蒞臨{{分會名稱}}',
+    '{{姓名}} 您好：\n\n感謝您{{活動日期}}撥空參加{{分會名稱}}的{{活動名稱}}，希望這次的交流對您有幫助。\n\n' +
+    '如果想更了解 BNI，或想再次參加，歡迎直接回覆這封信，或聯繫邀請您的{{邀請人}}。\n\n{{分會名稱}} 敬上'],
+  ['Email', '例會邀請', '誠摯邀請您參加{{分會名稱}}例會',
+    '{{姓名}} 您好：\n\n{{分會名稱}}誠摯邀請您參加例會：\n日期：{{活動日期}}\n時間：{{活動時間}}\n地點：{{活動地點}}\n\n' +
+    '線上報名：{{報名連結}}\n\n期待與您見面！\n{{分會名稱}} 敬上'],
+  ['Email', '會籍到期提醒', '{{分會名稱}}會籍即將到期提醒',
+    '{{姓名}} 您好：\n\n提醒您，您的會籍將於 {{到期日}} 到期。若有任何問題，歡迎與分會幹部聯繫。\n\n{{分會名稱}} 敬上'],
+  ['LINE', '例會提醒', '',
+    '【{{分會名稱}}】例會提醒\n📅 {{活動日期}} {{活動時間}}\n📍 {{活動地點}}\n目前已有 {{來賓人數}} 位來賓報名，大家加油！'],
+  ['LINE', '報名邀請', '',
+    '歡迎邀請朋友參加{{分會名稱}}{{活動名稱}} 🙌\n📅 {{活動日期}} {{活動時間}}\n📍 {{活動地點}}\n報名連結 👉 {{報名連結}}'],
+  ['LINE', '歡迎來賓', '',
+    '熱烈歡迎今天蒞臨{{分會名稱}}的來賓 🎉\n{{已到來賓}}\n謝謝大家的邀請！']
+];
+
 function col_(key, title, type) {
   return { key: key, title: title, type: type || 'text' };
 }
@@ -189,6 +216,44 @@ function sheetDefs_() {
       columns: [
         col_('id', '目標ID'), col_('category', '專業別'), col_('industryGroup', '產業群組'), col_('priority', '優先度'),
         col_('note', '備註'), deletedCol_()
+      ]
+    },
+    ledger: {
+      name: '收支帳',
+      widths: [110, 100, 60, 100, 90, 120, 260, 110, 90, 60, 160, 90, 150, 150],
+      columns: [
+        col_('id', '帳目ID'), col_('date', '日期'), col_('type', '類型'), col_('category', '科目'),
+        col_('amount', '金額', 'number'), col_('party', '對象'), col_('note', '說明'), col_('relatedId', '關聯ID'),
+        col_('handledBy', '經手人'), col_('status', '狀態'), col_('voidReason', '作廢原因'), col_('voidedBy', '作廢人'),
+        col_('voidedAt', '作廢時間'), col_('createdAt', '建立時間')
+      ]
+    },
+    dues: {
+      name: '會費紀錄',
+      widths: [110, 80, 100, 80, 80, 100, 110, 90, 60, 150],
+      columns: [
+        col_('id', '會費ID'), col_('memberId', '會員ID'), col_('name', '姓名'), col_('month', '月份'),
+        col_('amount', '金額', 'number'), col_('paidDate', '繳費日'), col_('ledgerId', '帳目ID'), col_('handledBy', '經手人'),
+        col_('status', '狀態'), col_('createdAt', '建立時間')
+      ]
+    },
+    templates: {
+      name: '訊息範本',
+      widths: [90, 70, 140, 240, 480, 150, 60],
+      columns: [
+        col_('id', '範本ID'), col_('channel', '管道'), col_('name', '名稱'), col_('subject', '主旨'),
+        col_('body', '內容'), col_('updatedAt', '更新時間'), deletedCol_()
+      ],
+      seed: function () {
+        return DEFAULT_TEMPLATES.map(function (t, i) { return ['TP' + String(i + 1).padStart(3, '0'), t[0], t[1], t[2], t[3], '', '']; });
+      }
+    },
+    sendLog: {
+      name: '發送紀錄',
+      widths: [110, 150, 60, 120, 140, 200, 240, 160, 100],
+      columns: [
+        col_('id', '紀錄ID'), col_('at', '時間'), col_('channel', '管道'), col_('template', '範本'),
+        col_('recipient', '對象'), col_('address', '信箱／群組'), col_('subject', '主旨'), col_('result', '結果'), col_('by', '發送人')
       ]
     },
     palms: {

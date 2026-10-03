@@ -56,6 +56,9 @@ function homeData_(d, ctx) {
   if (hasPermission(ctx.perms, 'followup.lead.view')) {
     cards.followups = myFollowups_(ctx);
   }
+  if (hasPermission(ctx.perms, 'finance.ledger.view')) {
+    cards.finance = financeCard_();
+  }
   return {
     today: today,
     now: now,
