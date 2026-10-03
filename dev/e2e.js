@@ -118,7 +118,7 @@ async function main() {
     assert.equal(await page.locator('.week button').count(), 7);
     assert.match(await page.textContent('#home-body'), /共識會議/);
     assert.match(await page.textContent('#top-title'), /示範分會/);
-    assert.deepEqual(await navItems(page), ['home', 'guests', 'checkin', 'palms', 'settings']);
+    assert.deepEqual(await navItems(page), ['home', 'events', 'dashboard', 'guests', 'checkin', 'showcase', 'wheel', 'palms', 'settings']);
     await shot(page, '03-home-desktop', true);
     step('登入（錯誤密碼擋下）與首頁（這一週、下一場例會與活動）');
 
@@ -178,6 +178,71 @@ async function main() {
       await page.waitForSelector('#print-root', { state: 'hidden' });
     }
     step('列印（會員簽到表、來賓簽到表、名牌、來賓桌牌、會員桌牌；PDF 頁數正確）');
+
+    // 5. 活動管理：停會、新增活動
+    await goTo(page, 'events');
+    await page.waitForSelector('.ev-row');
+    assert.match(await page.textContent('#ev-list'), /共識會議/);
+    assert.match(await page.textContent('#ev-list'), /中秋烤肉聯誼/);
+    await page.click('.ev-row[data-id="MTG-2026-10-15"]');
+    await page.click('#modal .modal-actions >> text=停會');
+    await page.click('#modal .btn-primary');
+    await page.waitForFunction(() => {
+      const row = document.querySelector('.ev-row[data-id="MTG-2026-10-15"]');
+      return row && /停會/.test(row.textContent);
+    });
+    await page.click('#ev-add');
+    await page.selectOption('#modal select[name=type]', '培訓');
+    await page.fill('#modal [name=name]', '新會員培訓');
+    await page.fill('#modal [name=date]', '2026-10-21');
+    await page.fill('#modal [name=startTime]', '19:00');
+    await page.fill('#modal [name=endTime]', '21:00');
+    await page.check('#modal [name=openRegistration]');
+    await page.click('#modal .btn-primary');
+    await page.waitForFunction(() => /新會員培訓/.test(document.querySelector('#ev-list').textContent));
+    await shot(page, '11-events', true);
+    step('活動管理（例會停會、新增培訓）');
+
+    // 6. 報名儀表板
+    await goTo(page, 'dashboard');
+    await page.waitForSelector('#db-body .grid-2');
+    assert.match(await page.textContent('#db-body'), /邀請排行榜/);
+    assert.match(await page.textContent('#db-body'), /王小明/);
+    await shot(page, '12-dashboard', true);
+    step('報名儀表板（未來四週、本月來賓、邀請排行榜、最新報名）');
+
+    // 7. 來賓速覽：只看已到場、投影模式
+    await goTo(page, 'showcase');
+    await page.waitForSelector('.sc-card');
+    assert.equal(await page.locator('.sc-card').count(), 5);
+    await page.check('#sc-arrived');
+    assert.equal(await page.locator('.sc-card').count(), 2);
+    await shot(page, '13-showcase', true);
+    await page.click('#sc-present');
+    await page.waitForSelector('.stage');
+    assert.equal(await page.textContent('#stage-count'), '1 / 2');
+    await page.keyboard.press('ArrowRight');
+    assert.equal(await page.textContent('#stage-count'), '2 / 2');
+    await shot(page, '14-showcase-stage');
+    await page.click('.stage [data-close]');
+    await page.waitForSelector('.stage', { state: 'detached' });
+    step('來賓速覽（卡片、只看已到場、投影模式切換）');
+
+    // 8. 幸運轉盤：到場會員抽獎、存紀錄、抽過的人不再抽
+    await goTo(page, 'wheel');
+    await page.waitForFunction(() => /名單 \d+ 人/.test(document.querySelector('#wh-count').textContent));
+    await page.selectOption('#wh-source', 'arrivedMembers');
+    assert.equal(await page.textContent('#wh-count'), '名單 2 人');
+    await page.fill('#wh-prize', '咖啡券');
+    await page.click('#wh-spin');
+    await page.waitForSelector('#modal .winner', { timeout: 15000 });
+    const winner = (await page.textContent('#modal .winner')).trim();
+    assert.ok(['王小明', '陳大華'].includes(winner), '得獎者在名單內：' + winner);
+    await shot(page, '15-wheel');
+    await page.click('#modal .btn-primary');
+    await page.waitForFunction(() => document.querySelectorAll('#wh-history li').length === 1);
+    assert.equal(await page.textContent('#wh-count'), '名單 1 人');
+    step('幸運轉盤（到場會員抽獎、紀錄、抽過的人移出名單）');
 
     // 5. 活動來賓：名單、個人邀請連結、活動代為登記會員、惡意字串不會被當成 HTML
     gas.api('public.register', { eventId: MTG, name: '<img src=x onerror="window.__xss=1">', category: '測試' });
@@ -258,9 +323,12 @@ async function main() {
     // 9. 權限：來賓接待只看得到自己的功能
     const staff = watch(await browser.newPage({ viewport: DESKTOP }));
     await login(staff, url, seeded.staff);
-    assert.deepEqual(await navItems(staff), ['home', 'guests', 'checkin']);
+    assert.deepEqual(await navItems(staff), ['home', 'events', 'guests', 'checkin', 'showcase', 'wheel']);
     assert.match(await staff.textContent('#who-title'), /來賓接待/);
-    step('權限（來賓接待只看到首頁、活動來賓、簽到與列印）');
+    await goTo(staff, 'events');
+    await staff.waitForSelector('.ev-row');
+    assert.equal(await staff.isVisible('#ev-add'), false, '來賓接待不能新增活動');
+    step('權限（來賓接待只看到自己的功能，活動只能看）');
 
     assert.deepEqual(errors, [], '瀏覽器錯誤');
     console.log('\n全部通過，截圖與 PDF：' + OUT);

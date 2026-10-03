@@ -166,3 +166,12 @@ test('訊息範本填字', () => {
   assert.equal(L.fillTemplate(text, { 姓名: '王小明', 例會日期: '2026-10-08（四）', 例會地點: '暮溢' }), '王小明 您好，2026-10-08（四）在暮溢見！');
   assert.deepEqual(L.templateKeys(text), ['姓名', '例會日期', '例會地點', '不存在']);
 });
+
+test('專業別同業判斷', () => {
+  assert.equal(L.categoriesConflict('室內設計', '室內 設計'), true);
+  assert.equal(L.categoriesConflict('設計', '室內設計'), true);
+  assert.equal(L.categoriesConflict('花藝', '花藝設計'), true);
+  assert.equal(L.categoriesConflict('保險', '會計'), false);
+  assert.equal(L.categoriesConflict('', '會計'), false);
+  assert.equal(L.categoriesConflict('A', 'AB'), false);
+});

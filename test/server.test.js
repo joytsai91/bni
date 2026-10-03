@@ -341,3 +341,69 @@ test('首頁：這一週、下一場例會與活動、報名人數', () => {
   s.setNow('2026-10-08T09:30:00+08:00'); // 例會已結束
   assert.equal(s.admin('home.data').nextMeeting.id, 'MTG-2026-10-15');
 });
+
+test('活動管理頁與報名儀表板：各場人數、邀請排行榜、本月來賓', () => {
+  const s = setup();
+  addMembersByHand(s);
+  s.setNow('2026-10-01T07:30:00+08:00');
+  const back = s.api('public.register', { eventId: 'MTG-2026-10-01', name: '回訪來賓', category: '室內設計', phone: '0933000111', inviter: '王小明' }).data.registration;
+  s.admin('registrations.update', { id: back.id, patch: { checkedIn: true } });
+  s.setNow('2026-10-08T06:50:00+08:00');
+  s.api('public.register', { eventId: MTG, name: '回訪來賓', category: '室內設計', phone: '0933-000-111', inviter: '王小明' });
+  s.setNow('2026-10-08T06:51:00+08:00');
+  s.api('public.register', { eventId: MTG, name: '新來賓', category: '花藝', inviter: '陳大華' });
+  const ev = s.admin('events.save', { type: '培訓', name: '新會員培訓', date: '2026-10-20', openRegistration: true });
+
+  const page = s.admin('events.page', {});
+  assert.equal(page.events[0].id, MTG);
+  assert.equal(page.events.find((e) => e.id === MTG).counts.guests, 2);
+  assert.ok(page.events.some((e) => e.id === ev.id));
+  assert.ok(!page.events.some((e) => e.date < '2026-10-08'));
+  assert.ok(s.admin('events.page', { past: true }).events.some((e) => e.id === 'MTG-2026-10-01'));
+
+  const dash = s.admin('events.dashboard');
+  assert.deepEqual(dash.upcoming.map((e) => e.id).slice(0, 3), [MTG, 'MTG-2026-10-15', ev.id]);
+  assert.deepEqual(dash.leaderboard.map((b) => [b.name, b.invited, b.attended]), [['王小明', 2, 1], ['陳大華', 1, 0]]);
+  assert.deepEqual(dash.month, { guests: 3, attended: 1 });
+  assert.deepEqual(dash.recent.map((r) => [r.name, r.eventName]), [['新來賓', '例會'], ['回訪來賓', '例會'], ['回訪來賓', '例會']]);
+});
+
+test('來賓速覽與幸運轉盤：來訪次數、同業會員、抽獎名單與紀錄、權限', () => {
+  const s = setup();
+  addMembersByHand(s);
+  s.setNow('2026-10-01T07:30:00+08:00');
+  const back = s.api('public.register', { eventId: 'MTG-2026-10-01', name: '回訪來賓', category: '室內設計', phone: '0933000111' }).data.registration;
+  s.admin('registrations.update', { id: back.id, patch: { checkedIn: true } });
+  s.setNow('2026-10-08T06:50:00+08:00');
+  s.api('public.register', { eventId: MTG, name: '回訪來賓', category: '室內設計', phone: '0933000111', inviter: '王小明' });
+  const fresh = s.api('public.register', { eventId: MTG, name: '新來賓', category: '花藝設計', inviter: '陳大華' }).data.registration;
+
+  const show = s.admin('meeting.showcase', { eventId: MTG });
+  assert.deepEqual(show.guests.map((g) => [g.name, g.visits, g.lastVisit]), [['回訪來賓', 1, '2026-10-01'], ['新來賓', 0, '']]);
+  assert.deepEqual(show.guests[0].sameCategory, [{ name: '王小明', category: '室內設計' }]);
+  assert.deepEqual(show.guests[1].sameCategory, [{ name: '林美麗', category: '花藝' }]);
+
+  s.admin('checkin.member', { eventId: MTG, memberId: 'M001', status: 'P' });
+  s.admin('checkin.member', { eventId: MTG, memberId: 'M002', status: 'L' });
+  s.admin('checkin.member', { eventId: MTG, memberId: 'M003', status: 'M' });
+  s.admin('registrations.update', { id: fresh.id, patch: { checkedIn: true } });
+  const wheel = s.admin('meeting.wheel', { eventId: MTG });
+  assert.deepEqual(wheel.pools, { arrivedGuests: ['新來賓'], arrivedMembers: ['王小明', '陳大華'], allMembers: ['王小明', '陳大華', '林美麗'] });
+  const rec = s.admin('meeting.wheelRecord', { eventId: MTG, prize: '咖啡券', winner: '新來賓', poolSize: 3 });
+  s.admin('meeting.wheelRecord', { eventId: MTG, prize: '咖啡券', winner: '王小明', poolSize: 2 });
+  assert.deepEqual(s.admin('meeting.wheel', { eventId: MTG }).history.map((h) => h.winner), ['王小明', '新來賓']);
+  assert.match(s.api('meeting.wheelRecord', { eventId: MTG, winner: ' ' }, s.token).error, /沒有得獎者/);
+  s.admin('meeting.wheelDelete', { id: rec.id });
+  assert.deepEqual(s.admin('meeting.wheel', { eventId: MTG }).history.map((h) => h.winner), ['王小明']);
+  assert.equal(rowsOf(s, '抽獎紀錄').length, 2);
+
+  s.admin('accounts.create', { username: 'amy', displayName: 'Amy', roles: '來賓接待', password: 'amy-pass-123' });
+  s.admin('accounts.create', { username: 'cara', displayName: 'Cara', roles: '財務', password: 'cara-pass-123' });
+  const amy = s.login('amy', 'amy-pass-123');
+  const cara = s.login('cara', 'cara-pass-123');
+  assert.equal(s.api('meeting.showcase', { eventId: MTG }, amy).ok, true);
+  assert.equal(s.api('meeting.wheel', { eventId: MTG }, amy).ok, true);
+  assert.match(s.api('events.dashboard', {}, amy).error, /權限/);
+  assert.match(s.api('meeting.wheel', { eventId: MTG }, cara).error, /權限/);
+  assert.equal(s.api('events.page', {}, cara).data.events[0].counts.guests, 2, '財務可以看活動來賓人數');
+});

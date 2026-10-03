@@ -403,6 +403,21 @@ function parseList(value) {
   return out;
 }
 
+// ---------- 專業別 ----------
+
+function categoryKey(value) {
+  return String(value == null ? '' : value).toLowerCase().replace(/[\s\-_.,，、\/／()（）]+/g, '');
+}
+
+/** 專業別相同，或一個包含另一個（例如「設計」與「室內設計」），視為可能同業 */
+function categoriesConflict(a, b) {
+  const ka = categoryKey(a);
+  const kb = categoryKey(b);
+  if (!ka || !kb) return false;
+  if (ka === kb) return true;
+  return ka.length >= 2 && kb.length >= 2 && (ka.indexOf(kb) >= 0 || kb.indexOf(ka) >= 0);
+}
+
 // ---------- 權限 ----------
 
 /** grant 可以是完整代碼、'finance.*' 這種整組，或 '*' 全部 */
@@ -463,7 +478,7 @@ if (typeof module !== 'undefined' && module.exports) {
     summarizePalms, findOverlaps, formatNumber, buildPalmsLineText,
     parseWeekday, weekdayOf, addDays, nextMeetingDate, upcomingMeetings, normalizeTime, checkinStatus,
     toSheetText, normalizePhone, isActiveMember,
-    meetingDatesBetween, timeRangeLabel, parseList,
+    meetingDatesBetween, timeRangeLabel, parseList, categoryKey, categoriesConflict,
     permissionMatches, resolvePermissions, hasPermission, fillTemplate, templateKeys
   };
 }

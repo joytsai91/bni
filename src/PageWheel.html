@@ -1,0 +1,232 @@
+<script>
+  /* 幸運轉盤：從到場來賓／會員或自訂名單抽獎，抽中自動存紀錄，可設定抽過的人不再抽 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    var COLORS = ['#d71e2b', '#1d4ed8', '#f59e0b', '#15803d', '#7e22ce', '#0e7490', '#c2410c', '#4b5563'];
+    var SPIN_MS = 4500;
+
+    /** 均勻的隨機整數（0 ～ n-1） */
+    function randomIndex(n) {
+      if (window.crypto && window.crypto.getRandomValues) {
+        var buf = new Uint32Array(1);
+        var limit = Math.floor(0x100000000 / n) * n;
+        do { window.crypto.getRandomValues(buf); } while (buf[0] >= limit);
+        return buf[0] % n;
+      }
+      return Math.floor(Math.random() * n);
+    }
+
+    function easeOut(t) {
+      return 1 - Math.pow(1 - t, 3);
+    }
+
+    App.registerPage('wheel', {
+      title: '幸運轉盤',
+      perm: 'meeting.wheel.use',
+      render: function (el) {
+        el.innerHTML = '<div class="page-head"><div><h1>幸運轉盤</h1><p>從到場的來賓或會員抽獎，抽中自動記錄</p></div></div>' +
+          '<div class="stack"><div id="wh-picker"></div><div class="grid-2">' +
+          '<section class="card"><div class="wheel-wrap"><div class="wheel-box"><div class="wheel-pointer"></div><canvas id="wh-canvas"></canvas></div>' +
+          '<button type="button" class="btn btn-primary btn-xl" id="wh-spin">開始抽獎</button><div class="muted" id="wh-count"></div></div></section>' +
+          '<section class="card stack"><div class="form-grid">' +
+          App.field('抽獎名單', '<select id="wh-source"><option value="arrivedGuests">到場來賓</option><option value="arrivedMembers">到場會員</option>' +
+            '<option value="arrived">全部到場（來賓＋會員）</option><option value="allMembers">全體在籍會員</option><option value="custom">自訂名單</option></select>') +
+          App.field('獎項', '<input type="text" id="wh-prize" maxlength="40" placeholder="例如：咖啡券">') +
+          '<div class="full" id="wh-custom-box" hidden>' + App.field('自訂名單', '<textarea id="wh-custom" rows="4" placeholder="一行一個名字，或用逗號分隔"></textarea>') + '</div>' +
+          '<label class="check full"><input type="checkbox" id="wh-exclude" checked> 這場活動抽過的人不再抽</label></div>' +
+          '<div><h3 style="margin-bottom:8px">抽獎紀錄</h3><div id="wh-history"></div></div></section></div></div>';
+        var canvas = el.querySelector('#wh-canvas');
+        var state = { event: null, data: null, names: [], angle: 0, spinning: false, frame: 0 };
+
+        function poolNames() {
+          var d = state.data;
+          if (!d) return [];
+          var source = el.querySelector('#wh-source').value;
+          var names;
+          if (source === 'custom') {
+            names = el.querySelector('#wh-custom').value.split(/[\n,，、]+/).map(function (s) { return s.trim(); }).filter(Boolean);
+          } else if (source === 'arrived') {
+            names = d.pools.arrivedGuests.concat(d.pools.arrivedMembers);
+          } else {
+            names = d.pools[source].slice();
+          }
+          var unique = [];
+          names.forEach(function (n) { if (unique.indexOf(n) < 0) unique.push(n); });
+          if (el.querySelector('#wh-exclude').checked) {
+            var won = d.history.map(function (h) { return h.winner; });
+            unique = unique.filter(function (n) { return won.indexOf(n) < 0; });
+          }
+          return unique;
+        }
+
+        function draw() {
+          var size = canvas.clientWidth || 360;
+          var dpr = window.devicePixelRatio || 1;
+          if (canvas.width !== Math.round(size * dpr)) {
+            canvas.width = Math.round(size * dpr);
+            canvas.height = Math.round(size * dpr);
+          }
+          var ctx = canvas.getContext('2d');
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+          ctx.clearRect(0, 0, size, size);
+          var r = size / 2 - 4;
+          var names = state.names;
+          ctx.save();
+          ctx.translate(size / 2, size / 2);
+          if (!names.length) {
+            ctx.beginPath();
+            ctx.arc(0, 0, r, 0, Math.PI * 2);
+            ctx.fillStyle = '#f3f4f6';
+            ctx.fill();
+            ctx.fillStyle = '#6b7280';
+            ctx.font = '600 16px "Noto Sans TC", sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('名單是空的', 0, 6);
+            ctx.restore();
+            return;
+          }
+          var seg = Math.PI * 2 / names.length;
+          ctx.rotate(state.angle);
+          names.forEach(function (name, i) {
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.arc(0, 0, r, i * seg, (i + 1) * seg);
+            ctx.closePath();
+            ctx.fillStyle = COLORS[i % COLORS.length];
+            if (names.length % COLORS.length === 1 && i === names.length - 1) ctx.fillStyle = COLORS[2];
+            ctx.fill();
+            ctx.save();
+            ctx.rotate((i + 0.5) * seg);
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold ' + Math.max(11, Math.min(20, Math.floor(r * seg / 2.2))) + 'px "Noto Sans TC", sans-serif';
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(name.length > 8 ? name.slice(0, 8) + '…' : name, r - 14, 0);
+            ctx.restore();
+          });
+          ctx.restore();
+          ctx.beginPath();
+          ctx.arc(size / 2, size / 2, 26, 0, Math.PI * 2);
+          ctx.fillStyle = '#fff';
+          ctx.fill();
+        }
+
+        function refreshNames() {
+          if (state.spinning) return;
+          state.names = poolNames();
+          el.querySelector('#wh-count').textContent = '名單 ' + state.names.length + ' 人';
+          draw();
+        }
+
+        function renderHistory() {
+          var box = el.querySelector('#wh-history');
+          var h = state.data ? state.data.history : [];
+          if (!h.length) {
+            box.innerHTML = '<p class="muted" style="margin:0">這場活動還沒有抽獎紀錄</p>';
+            return;
+          }
+          box.innerHTML = '<ul class="list">' + h.map(function (r) {
+            return '<li data-id="' + esc(r.id) + '"><span><b>' + esc(r.winner) + '</b>' + (r.prize ? ' <span class="tag">' + esc(r.prize) + '</span>' : '') +
+              '<br><span class="muted small">' + esc((r.drawnAt || '').slice(11, 16) + '・' + r.drawnBy + '・名單 ' + r.poolSize + ' 人') + '</span></span>' +
+              '<button type="button" class="btn btn-sm btn-danger" data-act="delete">刪除</button></li>';
+          }).join('') + '</ul>';
+        }
+
+        function load() {
+          var id = state.event.id;
+          return App.api('meeting.wheel', { eventId: id }).then(function (res) {
+            if (state.event.id !== id) return;
+            state.data = res;
+            renderHistory();
+            refreshNames();
+          }).catch(App.handleError);
+        }
+
+        function spin() {
+          var names = state.names;
+          if (state.spinning || !names.length) {
+            if (!names.length) App.toast('名單是空的', 'error');
+            return;
+          }
+          var winnerIndex = randomIndex(names.length);
+          var seg = Math.PI * 2 / names.length;
+          var jitter = (randomIndex(1000) / 1000 - 0.5) * seg * 0.6;
+          // 讓得獎者那一格的中心停在正上方（-90 度）
+          var base = -Math.PI / 2 - (winnerIndex + 0.5) * seg + jitter;
+          var startAngle = state.angle;
+          var target = base + Math.PI * 2 * Math.ceil((startAngle + Math.PI * 10 - base) / (Math.PI * 2));
+          var started = null;
+          state.spinning = true;
+          var btn = el.querySelector('#wh-spin');
+          btn.disabled = true;
+          function step(ts) {
+            if (started === null) started = ts;
+            var t = Math.min(1, (ts - started) / SPIN_MS);
+            state.angle = startAngle + (target - startAngle) * easeOut(t);
+            draw();
+            if (t < 1) {
+              state.frame = requestAnimationFrame(step);
+              return;
+            }
+            state.angle = target % (Math.PI * 2);
+            finish(names[winnerIndex], names.length).then(function () {
+              state.spinning = false;
+              btn.disabled = false;
+              refreshNames();
+            });
+          }
+          state.frame = requestAnimationFrame(step);
+        }
+
+        function finish(winner, poolSize) {
+          var prize = el.querySelector('#wh-prize').value.trim();
+          return App.api('meeting.wheelRecord', { eventId: state.event.id, prize: prize, winner: winner, poolSize: poolSize }).then(function (rec) {
+            state.data.history.unshift(rec);
+            renderHistory();
+          }).catch(App.handleError).then(function () {
+            return App.modal.open({
+              title: '恭喜！',
+              body: '<div class="winner">' + esc(winner) + '</div>' + (prize ? '<p class="muted" style="text-align:center">' + esc(prize) + '</p>' : ''),
+              actions: [{ label: '好', value: null, cls: 'btn-primary', primary: true }]
+            });
+          });
+        }
+
+        App.eventPicker(el.querySelector('#wh-picker'), function (e) {
+          state.event = e;
+          load();
+        });
+        el.querySelector('#wh-source').addEventListener('change', function () {
+          el.querySelector('#wh-custom-box').hidden = this.value !== 'custom';
+          refreshNames();
+        });
+        el.querySelector('#wh-custom').addEventListener('input', refreshNames);
+        el.querySelector('#wh-exclude').addEventListener('change', refreshNames);
+        el.querySelector('#wh-spin').addEventListener('click', spin);
+        el.querySelector('#wh-history').addEventListener('click', function (e) {
+          var btn = e.target.closest('[data-act=delete]');
+          if (!btn) return;
+          var id = btn.closest('li').getAttribute('data-id');
+          App.modal.confirm('刪除抽獎紀錄', '確定刪除這筆紀錄？刪除後這個人可以再被抽到。', '刪除').then(function (ok) {
+            if (!ok) return;
+            return App.api('meeting.wheelDelete', { id: id }).then(function () {
+              state.data.history = state.data.history.filter(function (h) { return h.id !== id; });
+              renderHistory();
+              refreshNames();
+            });
+          }).catch(App.handleError);
+        });
+        var onResize = function () { draw(); };
+        window.addEventListener('resize', onResize);
+        draw();
+        return function () {
+          cancelAnimationFrame(state.frame);
+          window.removeEventListener('resize', onResize);
+        };
+      }
+    });
+  })();
+</script>

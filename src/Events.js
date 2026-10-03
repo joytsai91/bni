@@ -216,3 +216,66 @@ function deleteEvent_(d) {
     return true;
   });
 }
+
+// ---------- 活動管理頁、報名儀表板 ----------
+
+/** 活動管理頁：預設今天起 120 天，past 為 true 時多看過去 60 天 */
+function eventsPage_(d, ctx) {
+  const today = todayIso_();
+  const canSeeRegs = hasPermission(ctx.perms, 'guests.registration.view');
+  const counts = canSeeRegs ? registrationCounts_() : {};
+  const events = listEvents_(d.past ? addDays(today, -60) : today, addDays(today, 120));
+  return {
+    today: today,
+    events: events.map(function (e) {
+      return Object.assign({}, e, { counts: canSeeRegs ? (counts[e.id] || emptyCounts_()) : null });
+    })
+  };
+}
+
+/** 報名儀表板：未來四週各場報名、邀請排行榜（近 90 天）、本月來賓、最新報名 */
+function registrationDashboard_() {
+  const today = todayIso_();
+  const now = nowTime_();
+  const regs = registrationsTable_().rows;
+  const counts = registrationCounts_();
+  const upcoming = listEvents_(today, addDays(today, 28))
+    .filter(function (e) { return !e.cancelled && (e.isMeeting || e.openRegistration) && isUpcoming_(e, today, now); })
+    .map(function (e) { return Object.assign({}, e, { counts: counts[e.id] || emptyCounts_() }); });
+
+  const from = addDays(today, -90);
+  const board = {};
+  regs.forEach(function (r) {
+    if ((r.role || ROLE_GUEST) !== ROLE_GUEST || !r.inviter || r.eventDate < from || r.eventDate > today) return;
+    const b = board[r.inviter] || (board[r.inviter] = { name: r.inviter, invited: 0, attended: 0 });
+    b.invited += 1;
+    if (r.checkedInAt) b.attended += 1;
+  });
+  const leaderboard = Object.keys(board).map(function (k) { return board[k]; }).sort(function (a, b) {
+    return b.attended - a.attended || b.invited - a.invited;
+  }).slice(0, 15);
+
+  const monthStart = today.slice(0, 8) + '01';
+  const monthGuests = regs.filter(function (r) {
+    return (r.role || ROLE_GUEST) === ROLE_GUEST && r.eventDate >= monthStart && r.eventDate <= today;
+  });
+
+  const recent = regs.slice().sort(function (a, b) { return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0; }).slice(0, 10);
+  const names = {};
+  if (recent.length) {
+    const dates = recent.map(function (r) { return r.eventDate; }).filter(Boolean).sort();
+    if (dates.length) listEvents_(dates[0], dates[dates.length - 1]).forEach(function (e) { names[e.id] = e.name; });
+  }
+  return {
+    today: today,
+    upcoming: upcoming,
+    leaderboard: leaderboard,
+    month: { guests: monthGuests.length, attended: monthGuests.filter(function (r) { return r.checkedInAt; }).length },
+    recent: recent.map(function (r) {
+      return {
+        name: r.name, role: r.role || ROLE_GUEST, eventId: r.eventId, eventDate: r.eventDate, eventName: names[r.eventId] || '',
+        inviter: r.inviter, source: r.source, createdAt: r.createdAt
+      };
+    })
+  };
+}

@@ -77,6 +77,8 @@ function apiRoutes_() {
     'home.data': { perm: 'home.dashboard.view', run: homeData_ },
 
     'events.options': { perm: 'events.event.view', run: eventOptions_ },
+    'events.page': { perm: 'events.event.view', run: eventsPage_ },
+    'events.dashboard': { perm: 'events.dashboard.view', run: registrationDashboard_ },
     'events.list': { perm: 'events.event.view', run: function (d) { return listEvents_(requireDate_(d.from), requireDate_(d.to)); } },
     'events.get': { perm: 'events.event.view', run: function (d) { return getEvent_(d.id); } },
     'events.save': { perm: 'events.event.manage', run: saveEvent_ },
@@ -93,6 +95,10 @@ function apiRoutes_() {
     'checkin.member': { perm: 'checkin.attendance.manage', run: setMemberStatus_ },
     'checkin.markAbsent': { perm: 'checkin.attendance.manage', run: markUncheckedAbsent_ },
     'print.data': { perm: 'checkin.print.view', run: printData_ },
+    'meeting.showcase': { perm: 'meeting.showcase.view', run: showcaseData_ },
+    'meeting.wheel': { perm: 'meeting.wheel.use', run: wheelData_ },
+    'meeting.wheelRecord': { perm: 'meeting.wheel.use', run: recordWheel_ },
+    'meeting.wheelDelete': { perm: 'meeting.wheel.use', run: deleteWheelRecord_ },
 
     'palms.preview': { perm: 'palms.report.manage', run: previewPalms_ },
     'palms.save': { perm: 'palms.report.manage', run: savePalms_ },

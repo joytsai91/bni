@@ -149,6 +149,15 @@ function sheetDefs_() {
         return [['R0001', '三', '12:00', 'BNI Connect 登錄截止', '', '是', '']];
       }
     },
+    wheel: {
+      name: '抽獎紀錄',
+      widths: [110, 140, 100, 140, 100, 70, 100, 150, 60],
+      columns: [
+        col_('id', '紀錄ID'), col_('eventId', '活動ID'), col_('eventDate', '活動日期'), col_('prize', '獎項'),
+        col_('winner', '得獎者'), col_('poolSize', '名單人數', 'number'), col_('drawnBy', '操作人'), col_('drawnAt', '抽獎時間'),
+        deletedCol_()
+      ]
+    },
     palms: {
       name: 'PALMS',
       columns: [col_('from', '期間起'), col_('to', '期間迄'), col_('name', '姓名')]

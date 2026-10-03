@@ -1,0 +1,137 @@
+<script>
+  /* 來賓速覽：當天來賓的大字卡片（第幾次來訪、同業會員提醒）；投影模式一位一頁 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    function visitText(g) {
+      return g.visits ? '第 ' + (g.visits + 1) + ' 次來訪（上次 ' + App.shortDate(g.lastVisit) + '）' : '第一次來訪';
+    }
+
+    function sameText(g) {
+      return g.sameCategory.length ? '同業會員：' + g.sameCategory.map(function (m) { return m.name + '（' + m.category + '）'; }).join('、') : '';
+    }
+
+    function card(g) {
+      var same = sameText(g);
+      return '<div class="sc-card' + (g.checkedInAt ? '' : ' absent') + '">' +
+        '<div class="toolbar">' + (g.checkedInAt ? '<span class="tag green">已到場</span>' : '<span class="tag gray">尚未到場</span>') +
+        '<span class="tag">' + esc(visitText(g)) + '</span></div>' +
+        '<div class="sc-name">' + esc(g.name) + '</div>' +
+        (g.company ? '<div class="sc-company">' + esc(g.company) + '</div>' : '') +
+        (g.category ? '<div class="sc-category">' + esc(g.category) + '</div>' : '') +
+        (g.inviter ? '<div class="muted">邀請人：' + esc(g.inviter) + '</div>' : '') +
+        (same ? '<div class="sc-warn">' + esc(same) + '</div>' : '') +
+        (g.note ? '<div class="muted small">' + esc(g.note) + '</div>' : '') + '</div>';
+    }
+
+    /** 投影模式：全螢幕一位一頁，左右鍵、點按鈕或手機滑動切換 */
+    function present(guests, title) {
+      if (!guests.length) {
+        App.toast('沒有可以投影的來賓', 'error');
+        return;
+      }
+      var i = 0;
+      var stage = document.createElement('div');
+      stage.className = 'stage';
+      stage.innerHTML = '<div class="stage-body" id="stage-body"></div><div class="stage-bar"><span class="muted" id="stage-count"></span>' +
+        '<span class="toolbar"><button type="button" class="btn" data-step="-1">‹ 上一位</button><button type="button" class="btn" data-step="1">下一位 ›</button>' +
+        '<button type="button" class="btn" data-close>關閉</button></span></div>';
+      document.body.appendChild(stage);
+      function show() {
+        var g = guests[i];
+        var same = sameText(g);
+        stage.querySelector('#stage-body').innerHTML = '<div class="stage-sub">' + esc(title) + '・歡迎來賓</div>' +
+          '<div class="stage-name">' + esc(g.name) + '</div>' +
+          (g.company ? '<div class="stage-company">' + esc(g.company) + '</div>' : '') +
+          (g.category ? '<div class="stage-category">' + esc(g.category) + '</div>' : '') +
+          '<div class="stage-sub">' + esc((g.inviter ? '邀請人：' + g.inviter + '　' : '') + visitText(g)) + '</div>' +
+          (same ? '<div class="sc-warn" style="font-size:1.1rem">' + esc(same) + '</div>' : '');
+        stage.querySelector('#stage-count').textContent = (i + 1) + ' / ' + guests.length;
+      }
+      function go(step) {
+        i = (i + step + guests.length) % guests.length;
+        show();
+      }
+      function close() {
+        document.removeEventListener('keydown', onKey);
+        stage.remove();
+        if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(function () {});
+      }
+      function onKey(e) {
+        if (e.key === 'ArrowRight' || e.key === ' ') go(1);
+        else if (e.key === 'ArrowLeft') go(-1);
+        else if (e.key === 'Escape') close();
+      }
+      var startX = null;
+      stage.addEventListener('touchstart', function (e) { startX = e.touches[0].clientX; }, { passive: true });
+      stage.addEventListener('touchend', function (e) {
+        if (startX === null) return;
+        var dx = e.changedTouches[0].clientX - startX;
+        if (Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
+        startX = null;
+      });
+      stage.addEventListener('click', function (e) {
+        var step = e.target.closest('[data-step]');
+        if (step) go(Number(step.getAttribute('data-step')));
+        if (e.target.closest('[data-close]')) close();
+      });
+      document.addEventListener('keydown', onKey);
+      if (stage.requestFullscreen) stage.requestFullscreen().catch(function () { /* 嵌在網頁裡可能不允許全螢幕，維持滿版畫面 */ });
+      show();
+    }
+
+    App.registerPage('showcase', {
+      title: '來賓速覽',
+      perm: 'meeting.showcase.view',
+      render: function (el) {
+        el.innerHTML = '<div class="page-head"><div><h1>來賓速覽</h1><p>介紹來賓用：第幾次來訪、邀請人、同業會員提醒</p></div></div>' +
+          '<div class="stack"><div id="sc-picker"></div><div class="section-head"><label class="check"><input type="checkbox" id="sc-arrived"> 只看已到場</label>' +
+          '<span class="toolbar"><button type="button" class="btn" id="sc-refresh">重新整理</button><button type="button" class="btn btn-primary" id="sc-present">投影模式</button></span></div>' +
+          '<div id="sc-list"></div></div>';
+        var listEl = el.querySelector('#sc-list');
+        var data = null;
+        var event = null;
+
+        function visible() {
+          var onlyArrived = el.querySelector('#sc-arrived').checked;
+          return data.guests.filter(function (g) { return !onlyArrived || g.checkedInAt; });
+        }
+
+        function render() {
+          var list = visible();
+          if (!list.length) {
+            App.emptyState(listEl, data.guests.length ? '還沒有來賓到場' : '這場活動還沒有來賓');
+            return;
+          }
+          listEl.innerHTML = '<div class="sc-grid">' + list.map(card).join('') + '</div>';
+        }
+
+        function load() {
+          if (!event) return;
+          var id = event.id;
+          App.skeleton(listEl, 5);
+          App.api('meeting.showcase', { eventId: id }).then(function (res) {
+            if (event.id !== id) return;
+            data = res;
+            render();
+          }).catch(function (err) {
+            App.errorState(listEl, err);
+            App.handleError(err);
+          });
+        }
+
+        App.eventPicker(el.querySelector('#sc-picker'), function (e) {
+          event = e;
+          load();
+        });
+        el.querySelector('#sc-arrived').addEventListener('change', function () { if (data) render(); });
+        el.querySelector('#sc-refresh').addEventListener('click', load);
+        el.querySelector('#sc-present').addEventListener('click', function () {
+          if (data) present(visible(), App.eventLabel(data.event));
+        });
+      }
+    });
+  })();
+</script>

@@ -1,0 +1,64 @@
+<script>
+  /* 報名儀表板：未來四週各場報名、本月來賓、邀請排行榜（近 90 天）、最新報名 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    function eventCard(e) {
+      var c = e.counts;
+      var boxes = e.isMeeting ?
+        [['來賓報名', c.guests], ['已繳費', c.paid], ['已到場', c.checkedIn]] :
+        [['報名', c.total + (e.capacity ? ' / ' + e.capacity : '')], ['會員', c.members], ['來賓', c.guests]];
+      var pct = e.capacity ? Math.min(100, Math.round(c.total / e.capacity * 100)) : 0;
+      return '<section class="card"><div class="card-head"><h2>' + esc(App.eventLabel(e)) + '</h2>' +
+        (App.allowed('guests') ? '<button type="button" class="card-link" data-open="guests" data-event="' + esc(e.id) + '">活動來賓</button>' : '') + '</div>' +
+        '<div class="muted">' + esc([e.timeLabel, e.place].filter(Boolean).join('・') || '時間地點未定') + '</div>' +
+        '<div class="stat-row">' + boxes.map(function (b) {
+          return '<div class="stat-box"><b>' + esc(b[1]) + '</b><span>' + esc(b[0]) + '</span></div>';
+        }).join('') + '</div>' +
+        (e.capacity ? '<div class="progress" title="名額使用 ' + pct + '%"><i style="width:' + pct + '%"></i></div>' : '') + '</section>';
+    }
+
+    App.registerPage('dashboard', {
+      title: '報名儀表板',
+      perm: 'events.dashboard.view',
+      render: function (el) {
+        el.innerHTML = '<div class="page-head"><div><h1>報名儀表板</h1><p>未來四週的報名狀況與會員邀請表現</p></div></div><div class="stack" id="db-body"></div>';
+        var body = el.querySelector('#db-body');
+        App.skeleton(body, 8);
+        App.api('events.dashboard').then(function (d) {
+          var rate = d.month.guests ? Math.round(d.month.attended / d.month.guests * 100) : 0;
+          var html = '<section class="card"><div class="card-head"><h2>本月來賓</h2></div><div class="stat-row">' +
+            '<div class="stat-box"><b>' + d.month.guests + '</b><span>報名</span></div>' +
+            '<div class="stat-box"><b>' + d.month.attended + '</b><span>到場</span></div>' +
+            '<div class="stat-box"><b>' + rate + '%</b><span>到場率</span></div></div></section>';
+          html += '<h2>未來四週</h2>' + (d.upcoming.length ? '<div class="grid-2">' + d.upcoming.map(eventCard).join('') + '</div>' :
+            '<p class="empty">未來四週沒有開放報名的活動</p>');
+          html += '<div class="grid-2"><section class="card"><div class="card-head"><h2>邀請排行榜</h2><span class="muted small">近 90 天</span></div>' +
+            (d.leaderboard.length ? '<div class="table-wrap"><table class="data"><thead><tr><th>#</th><th>會員</th><th class="num">邀請</th><th class="num">到場</th></tr></thead><tbody>' +
+              d.leaderboard.map(function (b, i) {
+                return '<tr><td><span class="rank' + (i < 3 ? ' top' : '') + '">' + (i + 1) + '</span></td><td><b>' + esc(b.name) + '</b></td>' +
+                  '<td class="num">' + b.invited + '</td><td class="num">' + b.attended + '</td></tr>';
+              }).join('') + '</tbody></table></div>' : '<p class="muted">近 90 天還沒有邀請紀錄</p>') + '</section>' +
+            '<section class="card"><div class="card-head"><h2>最新報名</h2></div>' +
+            (d.recent.length ? '<ul class="list">' + d.recent.map(function (r) {
+              return '<li><span><b>' + esc(r.name) + '</b>' + (r.role === '會員' ? ' <span class="tag">會員</span>' : '') +
+                '<br><span class="muted small">' + esc(App.shortDate(r.eventDate) + ' ' + r.eventName + (r.inviter ? '・邀請人 ' + r.inviter : '')) + '</span></span>' +
+                '<span class="muted small">' + esc(r.source + '・' + (r.createdAt || '').slice(5, 16)) + '</span></li>';
+            }).join('') + '</ul>' : '<p class="muted">還沒有報名資料</p>') + '</section></div>';
+          body.innerHTML = html;
+        }).catch(function (err) {
+          App.errorState(body, err);
+          App.handleError(err);
+        });
+        body.addEventListener('click', function (e) {
+          var open = e.target.closest('[data-open]');
+          if (!open) return;
+          App.state.eventId = open.getAttribute('data-event');
+          App.go(open.getAttribute('data-open'));
+        });
+      }
+    });
+  })();
+</script>

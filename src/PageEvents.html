@@ -1,0 +1,201 @@
+<script>
+  /* 活動管理：每週例會自動排入；共識會議、培訓、聯誼等手動新增；停會、改地點、刪除 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    function eventTags(e) {
+      var tags = ['<span class="tag ' + (e.isMeeting ? '' : 'gray') + '">' + esc(e.type) + '</span>'];
+      if (e.cancelled) tags.push('<span class="tag red">' + (e.isMeeting ? '停會' : '已取消') + '</span>');
+      else if (!e.isMeeting && e.openRegistration) tags.push('<span class="tag green">開放報名</span>');
+      if (e.fee) tags.push('<span class="tag gray">' + esc(App.money(e.fee)) + '</span>');
+      return tags.join('');
+    }
+
+    function eventRow(e) {
+      var c = e.counts;
+      var counts = '';
+      if (c && (e.isMeeting || e.openRegistration)) {
+        counts = e.isMeeting ? '來賓報名 ' + c.guests + '・已到場 ' + c.checkedIn :
+          '報名 ' + c.total + (e.capacity ? ' / ' + e.capacity : '') + '・會員 ' + c.members + '・來賓 ' + c.guests;
+      }
+      return '<button type="button" class="ev-row' + (e.cancelled ? ' cancelled' : '') + '" data-id="' + esc(e.id) + '">' +
+        '<div class="date-block"><b>' + Number(e.date.slice(8)) + '</b><span>週' + App.WEEKDAYS[new Date(e.date + 'T00:00:00Z').getUTCDay()] + '</span></div>' +
+        '<div class="ev-main"><div class="ev-name">' + esc(e.name) + eventTags(e) + '</div>' +
+        '<div class="ev-meta">' + esc([e.timeLabel, e.place].filter(Boolean).join('・') || '時間地點未定') + '</div>' +
+        (counts ? '<div class="ev-counts">' + esc(counts) + '</div>' : '') + '</div></button>';
+    }
+
+    function eventForm(e) {
+      var isMeeting = e.isMeeting;
+      var types = App.session.eventTypes || [];
+      var form = document.createElement('form');
+      form.className = 'form-grid';
+      form.innerHTML =
+        App.field('類型', '<select name="type"' + (isMeeting && e.id ? ' disabled' : '') + '>' + types.map(function (t) {
+          return '<option' + (t === (e.type || '共識會議') ? ' selected' : '') + '>' + esc(t) + '</option>';
+        }).join('') + '</select>', true) +
+        App.field('名稱', '<input type="text" name="name" maxlength="40" value="' + esc(e.name || '') + '">', false, '留空就用類型當名稱') +
+        App.field('日期', '<input type="date" name="date" value="' + esc(e.date || '') + '"' + (isMeeting && e.id ? ' readonly' : '') + '>', true,
+          isMeeting && e.id ? '每週例會日期固定；要改期請停會後另外新增一場「例會」' : '') +
+        App.field('開始時間', '<input type="time" name="startTime" value="' + esc(e.startTime || '') + '">') +
+        App.field('結束時間', '<input type="time" name="endTime" value="' + esc(e.endTime || '') + '">') +
+        App.field('地點', '<input type="text" name="place" maxlength="80" value="' + esc(e.place || '') + '">') +
+        (isMeeting && e.id ? '' :
+          App.field('費用', '<input type="number" name="fee" min="0" step="1" value="' + esc(e.fee || '') + '">', false, '參加者要付的費用，0 或留空代表免費') +
+          App.field('名額', '<input type="number" name="capacity" min="0" step="1" value="' + esc(e.capacity || '') + '">', false, '留空代表不限')) +
+        '<label class="check full"><input type="checkbox" name="openRegistration"' + (e.openRegistration ? ' checked' : '') + '> 開放公開報名（報名頁看得到）</label>' +
+        App.field('說明', '<textarea name="description" rows="3" maxlength="500">' + esc(e.description || '') + '</textarea>', false, '', 'full') +
+        '<button type="submit" hidden></button>';
+      return form;
+    }
+
+    function detailBody(e) {
+      var rows = [
+        ['日期', e.dateLabel], ['時間', e.timeLabel || '未定'], ['地點', e.place || '未定'], ['類型', e.type],
+        ['報名', e.openRegistration ? '開放公開報名' : '不開放公開報名'], ['費用', e.fee ? App.money(e.fee) : '免費'],
+        ['名額', e.capacity ? e.capacity + ' 人' : '不限']
+      ];
+      if (e.counts) rows.push(['目前報名', e.counts.total + ' 人（來賓 ' + e.counts.guests + '、會員 ' + e.counts.members + '）']);
+      if (e.cancelled) rows.unshift(['狀態', e.isMeeting ? '停會' : '已取消']);
+      return '<ul class="list">' + rows.map(function (r) {
+        return '<li><span class="muted">' + esc(r[0]) + '</span><span>' + esc(r[1]) + '</span></li>';
+      }).join('') + '</ul>' + (e.description ? '<p style="white-space:pre-wrap">' + esc(e.description) + '</p>' : '');
+    }
+
+    App.registerPage('events', {
+      title: '活動管理',
+      perm: 'events.event.view',
+      render: function (el) {
+        var canManage = App.can('events.event.manage');
+        var state = { past: false, filter: 'all', data: null };
+        el.innerHTML = '<div class="page-head"><div><h1>活動管理</h1><p>每週例會自動排入；共識會議、培訓、聯誼等在這裡新增</p></div>' +
+          (canManage ? '<button type="button" class="btn btn-primary" id="ev-add">＋ 新增活動</button>' : '') + '</div>' +
+          '<div class="stack"><div class="section-head"><div class="filter-chips" id="ev-filter">' +
+          '<button type="button" data-f="all" class="active">全部</button><button type="button" data-f="meeting">例會</button><button type="button" data-f="other">其他活動</button></div>' +
+          '<label class="check"><input type="checkbox" id="ev-past"> 顯示過去 60 天</label></div><div id="ev-list"></div></div>';
+        var listEl = el.querySelector('#ev-list');
+
+        function render() {
+          var events = state.data.events.filter(function (e) {
+            return state.filter === 'all' || (state.filter === 'meeting' ? e.isMeeting : !e.isMeeting);
+          });
+          if (!events.length) {
+            App.emptyState(listEl, '這段期間沒有活動');
+            return;
+          }
+          var html = '';
+          var month = '';
+          events.forEach(function (e) {
+            var m = e.date.slice(0, 7);
+            if (m !== month) {
+              month = m;
+              html += '<div class="ev-month">' + Number(m.slice(0, 4)) + ' 年 ' + Number(m.slice(5)) + ' 月</div>';
+            }
+            html += eventRow(e);
+          });
+          listEl.innerHTML = '<div class="ev-list">' + html + '</div>';
+        }
+
+        function load() {
+          App.skeleton(listEl, 6);
+          return App.api('events.page', { past: state.past }).then(function (res) {
+            state.data = res;
+            render();
+          }).catch(function (err) {
+            App.errorState(listEl, err);
+            App.handleError(err);
+          });
+        }
+
+        function edit(e) {
+          var form = eventForm(e);
+          App.modal.open({
+            title: e.id ? '編輯：' + App.eventLabel(e) : '新增活動',
+            body: form,
+            actions: [
+              { label: '取消', value: null },
+              {
+                label: '儲存', value: 'ok', cls: 'btn-primary', primary: true, validate: function () {
+                  if (App.formValues(form).date) return true;
+                  App.toast('請選擇日期', 'error');
+                  return false;
+                }
+              }
+            ]
+          }).then(function (v) {
+            if (v !== 'ok') return;
+            var data = App.formValues(form);
+            data.id = e.id || '';
+            if (e.isMeeting && e.id) data.type = '例會';
+            return App.api('events.save', data).then(function (saved) {
+              App.toast('已儲存 ' + App.eventLabel(saved));
+              load();
+            });
+          }).catch(App.handleError);
+        }
+
+        function openDetail(e) {
+          var actions = [{ label: '關閉', value: null }];
+          if (App.allowed('guests') && (e.isMeeting || e.openRegistration)) actions.push({ label: '活動來賓', value: 'guests' });
+          if (App.allowed('checkin') && e.date === state.data.today) actions.push({ label: '簽到', value: 'checkin' });
+          if (canManage) {
+            if (!e.isMeeting) actions.push({ label: '刪除', value: 'delete', cls: 'btn-danger' });
+            actions.push({ label: e.cancelled ? '恢復' : (e.isMeeting ? '停會' : '取消活動'), value: 'status' });
+            actions.push({ label: '編輯', value: 'edit', cls: 'btn-primary' });
+          }
+          App.modal.open({ title: App.eventLabel(e), body: detailBody(e), actions: actions }).then(function (v) {
+            if (v === 'guests' || v === 'checkin') {
+              App.state.eventId = e.id;
+              App.go(v);
+            } else if (v === 'edit') {
+              edit(e);
+            } else if (v === 'status') {
+              var word = e.cancelled ? '恢復' : (e.isMeeting ? '停會' : '取消');
+              return App.modal.confirm(word + '：' + App.eventLabel(e), e.cancelled ? '恢復後報名頁會重新顯示這場活動。' : '確定' + word + '？報名頁將不再顯示這場活動，已報名的資料會保留。', word).then(function (ok) {
+                if (!ok) return;
+                return App.api('events.status', { id: e.id, cancelled: !e.cancelled }).then(function () {
+                  App.toast('已' + word);
+                  load();
+                });
+              });
+            } else if (v === 'delete') {
+              return App.modal.confirm('刪除活動', '確定刪除「' + e.name + '」？（資料仍保留在試算表）', '刪除').then(function (ok) {
+                if (!ok) return;
+                return App.api('events.delete', { id: e.id }).then(function () {
+                  App.toast('已刪除');
+                  load();
+                });
+              });
+            }
+          }).catch(App.handleError);
+        }
+
+        el.querySelector('#ev-filter').addEventListener('click', function (e) {
+          var b = e.target.closest('[data-f]');
+          if (!b || !state.data) return;
+          state.filter = b.getAttribute('data-f');
+          App.$$('#ev-filter button', el).forEach(function (x) { x.classList.toggle('active', x === b); });
+          render();
+        });
+        el.querySelector('#ev-past').addEventListener('change', function () {
+          state.past = this.checked;
+          load();
+        });
+        listEl.addEventListener('click', function (e) {
+          var row = e.target.closest('.ev-row');
+          if (!row || !state.data) return;
+          var ev = state.data.events.filter(function (x) { return x.id === row.getAttribute('data-id'); })[0];
+          if (ev) openDetail(ev);
+        });
+        if (canManage) {
+          el.querySelector('#ev-add').addEventListener('click', function () {
+            edit({ type: '共識會議', openRegistration: false });
+          });
+        }
+        load();
+      }
+    });
+  })();
+</script>
