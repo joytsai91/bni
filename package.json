@@ -1,0 +1,16 @@
+{
+  "name": "bni-chapter-system",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BNI 分會管理系統：簽到、來賓報名、名牌桌牌列印、PALMS 匯入（Google Apps Script + Google 試算表）",
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "dev": "node dev/server.js",
+    "e2e": "node dev/e2e.js",
+    "push": "clasp push"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1",
+    "xlsx": "0.18.5"
+  }
+}

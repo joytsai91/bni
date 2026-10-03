@@ -1,0 +1,786 @@
+<script>
+  /* 管理系統：登入、簽到、來賓、列印、PALMS、設定 */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var $ = App.$;
+    var $$ = App.$$;
+    var esc = App.esc;
+    var api = App.api;
+    var toast = App.toast;
+
+    var STATUS = {
+      P: { label: '出席', cls: 'st-P' },
+      L: { label: '遲到', cls: 'st-L' },
+      S: { label: '代理', cls: 'st-S' },
+      M: { label: '病假', cls: 'st-M' },
+      A: { label: '缺席', cls: 'st-A' }
+    };
+    var PALMS_COLS = [['P', 'P'], ['A', 'A'], ['L', 'L'], ['M', 'M'], ['S', 'S'], ['RGI', 'RGI'], ['RGO', 'RGO'],
+      ['RRI', 'RRI'], ['RRO', 'RRO'], ['V', 'V'], ['121', '1-2-1'], ['TYFCB', 'TYFCB'], ['CEU', 'CEU'], ['T', 'T']];
+    // SheetJS 官方 CDN 的 0.20.3（npm 與 cdnjs 上的 0.18.5 有已知漏洞）
+    var XLSX_URL = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+    var QR_URL = 'https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js';
+
+    var state = { boot: null, date: '', tab: 'checkin', board: null, guests: null, preview: null };
+
+    function handleError(err) {
+      var msg = (err && err.message) || String(err);
+      if (/管理密碼錯誤|尚未設定管理密碼|錯誤次數過多/.test(msg)) {
+        App.setPin('');
+        showLogin(msg);
+        return;
+      }
+      toast(msg, 'error');
+    }
+
+    function fmt(n) {
+      return (Number(n) || 0).toLocaleString('en-US', { maximumFractionDigits: 2 });
+    }
+
+    function field(label, control, required) {
+      return '<label class="field"><span>' + esc(label) + (required ? ' <b class="req">*</b>' : '') + '</span>' + control + '</label>';
+    }
+
+    function input(form, name) {
+      return form.querySelector('[name="' + name + '"]');
+    }
+
+    function formValues(form) {
+      var out = {};
+      App.$$('[name]', form).forEach(function (el) {
+        out[el.name] = el.type === 'checkbox' ? el.checked : String(el.value).trim();
+      });
+      return out;
+    }
+
+    // ---------- 登入 ----------
+
+    function showLogin(message) {
+      $('#login-view').hidden = false;
+      $('#main-view').hidden = true;
+      $('#tabs').hidden = true;
+      $('#date-box').hidden = true;
+      $('#login-error').textContent = message || '';
+      $('#login-error').hidden = !message;
+      $('#pin-input').value = '';
+      $('#pin-input').focus();
+    }
+
+    function applyBoot(boot) {
+      state.boot = boot;
+      $('#chapter-name').textContent = boot.settings.chapterName;
+    }
+
+    function start() {
+      return api('admin.bootstrap').then(function (boot) {
+        applyBoot(boot);
+        state.date = boot.nextMeeting;
+        $('#meeting-date').value = state.date;
+        $('#login-view').hidden = true;
+        $('#main-view').hidden = false;
+        $('#tabs').hidden = false;
+        $('#date-box').hidden = false;
+        switchTab(state.tab);
+      }).catch(handleError);
+    }
+
+    function refreshBoot() {
+      return api('admin.bootstrap').then(applyBoot).catch(handleError);
+    }
+
+    // ---------- 分頁 ----------
+
+    var LOADERS = {
+      checkin: loadBoard,
+      guests: loadGuests,
+      print: renderPrintTab,
+      palms: loadPalms,
+      settings: renderSettings
+    };
+
+    function switchTab(tab) {
+      state.tab = tab;
+      $$('#tabs button').forEach(function (b) { b.classList.toggle('active', b.getAttribute('data-tab') === tab); });
+      $$('.view').forEach(function (v) { v.hidden = v.getAttribute('data-view') !== tab; });
+      LOADERS[tab]();
+    }
+
+    function onDateChange() {
+      var v = $('#meeting-date').value;
+      if (!v) return;
+      state.date = v;
+      state.board = null;
+      state.guests = null;
+      LOADERS[state.tab]();
+    }
+
+    // ---------- 簽到 ----------
+
+    function loadBoard() {
+      var date = state.date;
+      if (!state.board || state.board.date !== date) $('#member-grid').innerHTML = '<p class="muted">載入中…</p>';
+      return api('checkin.board', { date: date }).then(function (board) {
+        if (date !== state.date) return;
+        state.board = board;
+        renderBoard();
+      }).catch(handleError);
+    }
+
+    function findMember(id) {
+      return state.board.members.filter(function (m) { return m.id === id; })[0];
+    }
+
+    function memberCard(m) {
+      var st = STATUS[m.status];
+      var time = m.checkedInAt && (m.status === 'P' || m.status === 'L') ? ' ' + m.checkedInAt.slice(11, 16) : '';
+      var badge = st ? st.label + (m.status === 'S' && m.substitute ? '・' + m.substitute : '') + time : '未簽到';
+      return '<button type="button" class="member-card ' + (st ? st.cls : 'st-none') + (m.pending ? ' pending' : '') +
+        '" data-id="' + esc(m.id) + '"><span class="mc-name">' + esc(m.name) + '</span>' +
+        '<span class="mc-sub">' + esc(m.category || m.company || '') + '</span>' +
+        '<span class="mc-badge">' + esc(badge) + '</span></button>';
+    }
+
+    function guestRow(g) {
+      var sub = [g.company, g.category].filter(Boolean).join('・') + (g.inviter ? '｜邀請人：' + g.inviter : '');
+      return '<div class="guest-row' + (g.checkedInAt ? ' is-in' : '') + '" data-id="' + esc(g.id) + '">' +
+        '<div><div class="gr-name">' + esc(g.name) + (g.source === '現場' ? ' <span class="tag">現場</span>' : '') + '</div>' +
+        '<div class="gr-sub">' + esc(sub) + '</div></div><div class="gr-actions">' +
+        '<button type="button" class="pill' + (g.checkedInAt ? ' on' : '') + '" data-act="checkin">' +
+        (g.checkedInAt ? '已到 ' + esc(g.checkedInAt.slice(11, 16)) : '簽到') + '</button>' +
+        '<button type="button" class="pill' + (g.paid ? ' on' : '') + '" data-act="paid">' + (g.paid ? '已繳費' : '未繳費') + '</button>' +
+        '</div></div>';
+    }
+
+    function statusCounts() {
+      var c = { P: 0, L: 0, S: 0, M: 0, A: 0, none: 0 };
+      state.board.members.forEach(function (m) { c[m.status || 'none'] += 1; });
+      return c;
+    }
+
+    function renderBoard() {
+      var b = state.board;
+      if (!b) return;
+      var q = $('#member-search').value.trim().toLowerCase();
+      var members = b.members.filter(function (m) {
+        return !q || (m.name + ' ' + m.company + ' ' + m.category).toLowerCase().indexOf(q) >= 0;
+      });
+      $('#member-grid').innerHTML = members.length ? members.map(memberCard).join('') :
+        '<p class="empty">' + (b.members.length ? '找不到符合的會員' :
+          '會員名單是空的：請到試算表「會員名單」填入，或在 PALMS 分頁匯入報表自動建立') + '</p>';
+      $('#checkin-guests').innerHTML = b.guests.length ? b.guests.map(guestRow).join('') :
+        '<p class="empty">這次例會還沒有來賓</p>';
+      var c = statusCounts();
+      var arrived = b.guests.filter(function (g) { return g.checkedInAt; }).length;
+      $('#checkin-stats').innerHTML = [
+        ['會員', b.members.length], ['出席', c.P], ['遲到', c.L], ['代理', c.S], ['病假', c.M], ['缺席', c.A],
+        ['未簽到', c.none], ['來賓到場', arrived + '/' + b.guests.length]
+      ].map(function (x) { return '<span class="stat">' + esc(x[0]) + '<b>' + esc(x[1]) + '</b></span>'; }).join('');
+    }
+
+    function setStatus(m, status, substitute) {
+      var prev = { status: m.status, substitute: m.substitute, checkedInAt: m.checkedInAt };
+      m.status = status === 'auto' ? 'P' : status;
+      m.pending = true;
+      renderBoard();
+      return api('checkin.member', { date: state.board.date, memberId: m.id, status: status, substitute: substitute || '' })
+        .then(function (res) {
+          m.status = res.status;
+          m.substitute = res.substitute;
+          m.checkedInAt = res.checkedInAt;
+          m.pending = false;
+          renderBoard();
+          toast(m.name + '：' + (STATUS[res.status] ? STATUS[res.status].label : '已清除'));
+        })
+        .catch(function (err) {
+          m.status = prev.status;
+          m.substitute = prev.substitute;
+          m.checkedInAt = prev.checkedInAt;
+          m.pending = false;
+          renderBoard();
+          handleError(err);
+        });
+    }
+
+    function openStatusModal(m) {
+      var body = document.createElement('div');
+      body.innerHTML = '<p class="muted">' + esc([m.company, m.category].filter(Boolean).join('・') || '　') + '</p>' +
+        '<div class="status-buttons">' + ['P', 'L', 'S', 'M', 'A'].map(function (k) {
+          return '<button type="button" class="status-btn ' + STATUS[k].cls + (m.status === k ? ' current' : '') +
+            '" data-modal-value="' + k + '">' + k + ' ' + STATUS[k].label + '</button>';
+        }).join('') + '</div>' +
+        field('代理人姓名（選「代理」時填寫）', '<input type="text" id="sub-name" maxlength="40" value="' + esc(m.substitute || '') + '">');
+      App.modal.open({
+        title: m.name,
+        body: body,
+        actions: [{ label: '清除簽到', value: 'clear', cls: 'btn-danger' }, { label: '取消', value: null }]
+      }).then(function (value) {
+        if (!value) return;
+        setStatus(m, value === 'clear' ? '' : value, body.querySelector('#sub-name').value.trim());
+      });
+    }
+
+    function onMemberClick(e) {
+      var card = e.target.closest('.member-card');
+      if (!card || !state.board) return;
+      var m = findMember(card.getAttribute('data-id'));
+      if (!m || m.pending) return;
+      // 例會當天點一下直接簽到；已簽到或補登其他日期則開狀態選單
+      if (!m.status && state.board.isToday) setStatus(m, 'auto');
+      else openStatusModal(m);
+    }
+
+    function onCheckinGuestClick(e) {
+      var btn = e.target.closest('[data-act]');
+      if (!btn || !state.board) return;
+      var id = btn.closest('.guest-row').getAttribute('data-id');
+      var g = state.board.guests.filter(function (x) { return x.id === id; })[0];
+      if (!g) return;
+      var patch = btn.getAttribute('data-act') === 'checkin' ? { checkedIn: !g.checkedInAt } : { paid: !g.paid };
+      btn.disabled = true;
+      api('guest.update', { id: id, patch: patch }).then(function (updated) {
+        g.checkedInAt = updated.checkedInAt;
+        g.paid = updated.paid;
+        renderBoard();
+      }).catch(function (err) {
+        btn.disabled = false;
+        handleError(err);
+      });
+    }
+
+    function markAbsent() {
+      var c = state.board ? statusCounts().none : 0;
+      if (!c) {
+        toast('所有會員都已有出席狀態');
+        return;
+      }
+      App.modal.confirm('未簽到者記缺席', '將 ' + c + ' 位還沒簽到的會員記為缺席 (A)，確定嗎？', '記為缺席').then(function (ok) {
+        if (!ok) return;
+        api('checkin.markAbsent', { date: state.board.date }).then(function (res) {
+          toast('已記錄 ' + res.count + ' 位缺席');
+          loadBoard();
+        }).catch(handleError);
+      });
+    }
+
+    function attendanceText() {
+      var b = state.board;
+      var c = statusCounts();
+      var names = { L: [], S: [], M: [], A: [], none: [] };
+      b.members.forEach(function (m) {
+        var k = m.status || 'none';
+        if (names[k]) names[k].push(m.status === 'S' && m.substitute ? m.name + '（代理人：' + m.substitute + '）' : m.name);
+      });
+      var lines = [
+        '【' + state.boot.settings.chapterName + '】' + App.dateLabel(b.date) + ' 出席結果',
+        '會員 ' + b.members.length + ' 位：出席 ' + c.P + '、遲到 ' + c.L + '、代理 ' + c.S + '、病假 ' + c.M + '、缺席 ' + c.A +
+          (c.none ? '、未簽到 ' + c.none : '')
+      ];
+      [['L', '遲到'], ['S', '代理'], ['M', '病假'], ['A', '缺席'], ['none', '未簽到']].forEach(function (x) {
+        if (names[x[0]].length) lines.push(x[1] + '：' + names[x[0]].join('、'));
+      });
+      var arrived = b.guests.filter(function (g) { return g.checkedInAt; });
+      lines.push('來賓 ' + b.guests.length + ' 位，到場 ' + arrived.length + ' 位' +
+        (arrived.length ? '：' + arrived.map(function (g) { return g.name; }).join('、') : ''));
+      return lines.join('\n');
+    }
+
+    // ---------- 來賓 ----------
+
+    function inviterSelect(current) {
+      var names = (state.boot.members || []).map(function (m) { return m.name; });
+      if (current && names.indexOf(current) < 0) names.unshift(current);
+      return '<select name="inviter"><option value="">（無）</option>' + names.map(function (n) {
+        return '<option' + (n === current ? ' selected' : '') + '>' + esc(n) + '</option>';
+      }).join('') + '</select>';
+    }
+
+    function guestForm(g, withPaid) {
+      var form = document.createElement('form');
+      form.className = 'form-grid';
+      form.innerHTML =
+        field('姓名', '<input type="text" name="name" maxlength="40" value="' + esc(g.name) + '">', true) +
+        field('公司', '<input type="text" name="company" maxlength="80" value="' + esc(g.company) + '">') +
+        field('專業別', '<input type="text" name="category" maxlength="60" value="' + esc(g.category) + '">') +
+        field('手機', '<input type="tel" name="phone" maxlength="30" value="' + esc(g.phone) + '">') +
+        field('Email', '<input type="email" name="email" maxlength="100" value="' + esc(g.email) + '">') +
+        field('邀請人', inviterSelect(g.inviter)) +
+        field('備註', '<input type="text" name="note" maxlength="200" value="' + esc(g.note) + '">') +
+        (withPaid ? '<label class="check"><input type="checkbox" name="paid"> 已繳費</label>' : '') +
+        '<button type="submit" hidden></button>';
+      return form;
+    }
+
+    function requireName(form) {
+      if (input(form, 'name').value.trim()) return true;
+      input(form, 'name').focus();
+      toast('請填寫來賓姓名', 'error');
+      return false;
+    }
+
+    /** checkIn 為 true：現場來賓（直接簽到）；false：代為登記報名 */
+    function openNewGuest(checkIn) {
+      var form = guestForm({}, checkIn);
+      App.modal.open({
+        title: checkIn ? '新增現場來賓' : '代為登記來賓',
+        body: form,
+        actions: [
+          { label: '取消', value: null },
+          { label: checkIn ? '新增並簽到' : '新增', value: 'ok', cls: 'btn-primary', primary: true, validate: function () { return requireName(form); } }
+        ]
+      }).then(function (v) {
+        if (v !== 'ok') return;
+        var data = formValues(form);
+        data.date = state.date;
+        return api(checkIn ? 'guest.walkin' : 'guest.add', data).then(function (res) {
+          toast(res.duplicate ? res.guest.name + ' 已有報名資料' + (checkIn ? '，已幫他簽到' : '') : '已新增 ' + res.guest.name);
+          if (state.tab === 'checkin') loadBoard();
+          else loadGuests();
+        });
+      }).catch(handleError);
+    }
+
+    function loadGuests() {
+      renderRegisterLink();
+      var date = state.date;
+      if (!state.guests) $('#guest-table').innerHTML = '<p class="muted">載入中…</p>';
+      return api('guest.list', { date: date }).then(function (list) {
+        if (date !== state.date) return;
+        state.guests = list;
+        renderGuests();
+      }).catch(handleError);
+    }
+
+    function renderGuests() {
+      var list = state.guests || [];
+      $('#guest-count').textContent = list.length ? '（' + list.length + ' 位）' : '';
+      if (!list.length) {
+        $('#guest-table').innerHTML = '<p class="empty">' + esc(App.dateLabel(state.date)) + ' 還沒有來賓</p>';
+        return;
+      }
+      $('#guest-table').innerHTML = '<div class="table-wrap"><table class="data"><thead><tr><th>姓名</th><th>公司</th><th>專業別</th>' +
+        '<th>手機</th><th>Email</th><th>邀請人</th><th>來源</th><th>簽到</th><th>繳費</th><th>備註</th><th></th></tr></thead><tbody>' +
+        list.map(function (g) {
+          return '<tr data-id="' + esc(g.id) + '"><td><b>' + esc(g.name) + '</b></td><td>' + esc(g.company) + '</td><td>' + esc(g.category) +
+            '</td><td>' + esc(g.phone) + '</td><td>' + esc(g.email) + '</td><td>' + esc(g.inviter) + '</td><td>' + esc(g.source) +
+            '</td><td>' + (g.checkedInAt ? esc(g.checkedInAt.slice(11, 16)) : '—') + '</td><td>' + (g.paid ? '✓' : '—') +
+            '</td><td>' + esc(g.note) + '</td><td><button type="button" class="btn btn-sm" data-act="edit">編輯</button> ' +
+            '<button type="button" class="btn btn-sm btn-danger" data-act="delete">刪除</button></td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+
+    function onGuestTableClick(e) {
+      var btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      var id = btn.closest('tr').getAttribute('data-id');
+      var g = (state.guests || []).filter(function (x) { return x.id === id; })[0];
+      if (!g) return;
+      if (btn.getAttribute('data-act') === 'delete') {
+        App.modal.confirm('刪除來賓', '確定刪除「' + g.name + '」的報名資料？', '刪除').then(function (ok) {
+          if (!ok) return;
+          api('guest.delete', { id: id }).then(function () {
+            toast('已刪除');
+            loadGuests();
+          }).catch(handleError);
+        });
+        return;
+      }
+      var form = guestForm(g, false);
+      App.modal.open({
+        title: '編輯來賓',
+        body: form,
+        actions: [
+          { label: '取消', value: null },
+          { label: '儲存', value: 'ok', cls: 'btn-primary', primary: true, validate: function () { return requireName(form); } }
+        ]
+      }).then(function (v) {
+        if (v !== 'ok') return;
+        return api('guest.update', { id: id, patch: formValues(form) }).then(function () {
+          toast('已儲存');
+          loadGuests();
+        });
+      }).catch(handleError);
+    }
+
+    function personalLink(name) {
+      var url = state.boot.registerUrl;
+      return name ? url + '&inviter=' + encodeURIComponent(name) : url;
+    }
+
+    function renderRegisterLink() {
+      var box = $('#register-link');
+      var url = state.boot.registerUrl;
+      if (!url) {
+        box.innerHTML = '<p class="muted">部署成網頁應用程式後，這裡會顯示來賓報名網址。</p>';
+        return;
+      }
+      if (box.getAttribute('data-url') === url) return;
+      box.setAttribute('data-url', url);
+      var members = state.boot.members || [];
+      box.innerHTML =
+        '<div class="link-box"><select id="link-inviter"><option value="">分會通用連結</option>' + members.map(function (m) {
+          return '<option>' + esc(m.name) + '</option>';
+        }).join('') + '</select><input type="text" id="register-url" readonly value="' + esc(url) + '">' +
+        '<button type="button" class="btn" id="copy-register">複製連結</button>' +
+        '<a class="btn" id="open-register" target="_blank" rel="noopener" href="' + esc(url) + '">開啟</a></div>' +
+        '<p class="muted small">選會員可產生個人邀請連結，來賓報名時會自動帶入邀請人。</p><div class="qr" id="register-qr"></div>';
+      var drawQr = function (link) {
+        App.loadScript(QR_URL).then(function () {
+          var el = $('#register-qr');
+          el.innerHTML = '';
+          new window.QRCode(el, { text: link, width: 264, height: 264, correctLevel: window.QRCode.CorrectLevel.M });
+        }).catch(function () { /* 沒有 QR code 不影響使用 */ });
+      };
+      $('#link-inviter').addEventListener('change', function () {
+        var link = personalLink(this.value);
+        $('#register-url').value = link;
+        $('#open-register').href = link;
+        drawQr(link);
+      });
+      $('#copy-register').addEventListener('click', function () {
+        App.copyText($('#register-url').value).then(function (ok) {
+          toast(ok ? '已複製報名連結' : '請手動複製連結', ok ? '' : 'error');
+        });
+      });
+      drawQr(url);
+    }
+
+    // ---------- 列印 ----------
+
+    function renderPrintTab() {
+      var s = state.boot.settings;
+      var l = App.Print.badgeLayout(s);
+      $('#badge-size-note').textContent = s.badgeWidth + '×' + s.badgeHeight + 'mm，A4 一頁 ' + l.perPage + ' 張（可在設定調整尺寸）';
+      $('#print-date-note').textContent = '例會日期：' + App.dateLabel(state.date);
+    }
+
+    function onPrintClick(e) {
+      var btn = e.target.closest('[data-print]');
+      if (!btn) return;
+      btn.disabled = true;
+      api('print.data', { date: state.date }).then(function (data) {
+        return App.Print.open(btn.getAttribute('data-print'), data, {
+          blankRows: $('#guest-blank-rows').value,
+          blankBadges: $('#badge-blank').value
+        });
+      }).catch(handleError).then(function () { btn.disabled = false; });
+    }
+
+    // ---------- PALMS ----------
+
+    function loadPalms() {
+      loadPeriods();
+      if (!$('#sum-from').value) presetSummary(6);
+      else runSummary();
+    }
+
+    function loadPeriods() {
+      return api('palms.periods').then(renderPeriods).catch(handleError);
+    }
+
+    function renderPeriods(list) {
+      if (!list.length) {
+        $('#palms-periods').innerHTML = '<p class="empty">還沒有匯入 PALMS 報表</p>';
+        return;
+      }
+      $('#palms-periods').innerHTML = '<div class="table-wrap"><table class="data"><thead><tr><th>期間</th><th class="num">人數</th>' +
+        '<th class="num">出席</th><th class="num">缺席</th><th class="num">引薦</th><th class="num">來賓</th><th class="num">1-2-1</th>' +
+        '<th class="num">感謝成交</th><th>匯入時間</th><th></th></tr></thead><tbody>' + list.map(function (p) {
+          var t = p.totals;
+          return '<tr data-from="' + esc(p.from) + '" data-to="' + esc(p.to) + '"><td>' + esc(p.from === p.to ? p.from : p.from + ' ～ ' + p.to) +
+            '</td><td class="num">' + p.count + '</td><td class="num">' + fmt(t.P) + '</td><td class="num">' + fmt(t.A) +
+            '</td><td class="num">' + fmt(t.referralsGiven) + '</td><td class="num">' + fmt(t.V) + '</td><td class="num">' + fmt(t['121']) +
+            '</td><td class="num">' + fmt(t.TYFCB) + '</td><td>' + esc(p.importedAt) + '</td><td>' +
+            '<button type="button" class="btn btn-sm" data-act="line">LINE 週報</button> ' +
+            '<button type="button" class="btn btn-sm btn-danger" data-act="delete">刪除</button></td></tr>';
+        }).join('') + '</tbody></table></div>';
+    }
+
+    function showLineText(from, to) {
+      api('palms.lineText', { from: from, to: to }).then(function (text) {
+        App.modal.showText('LINE 週報', text);
+      }).catch(handleError);
+    }
+
+    function onPeriodsClick(e) {
+      var btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      var tr = btn.closest('tr');
+      var from = tr.getAttribute('data-from');
+      var to = tr.getAttribute('data-to');
+      if (btn.getAttribute('data-act') === 'line') {
+        showLineText(from, to);
+        return;
+      }
+      App.modal.confirm('刪除 PALMS 資料', '確定刪除 ' + from + ' ～ ' + to + ' 這一期的資料？', '刪除').then(function (ok) {
+        if (!ok) return;
+        api('palms.delete', { from: from, to: to }).then(function (res) {
+          toast('已刪除 ' + res.count + ' 筆');
+          loadPeriods();
+          runSummary();
+        }).catch(handleError);
+      });
+    }
+
+    function readFile(file) {
+      return new Promise(function (resolve, reject) {
+        var reader = new FileReader();
+        reader.onload = function () { resolve(reader.result); };
+        reader.onerror = function () { reject(new Error('讀取檔案失敗')); };
+        reader.readAsArrayBuffer(file);
+      });
+    }
+
+    function decodeText(buf) {
+      var bytes = new Uint8Array(buf);
+      var text = new TextDecoder('utf-8').decode(bytes);
+      if (text.indexOf('�') >= 0) {
+        try { text = new TextDecoder('big5').decode(bytes); } catch (e) { /* 瀏覽器不支援 Big5 就維持 UTF-8 */ }
+      }
+      return text.replace(/^﻿/, '');
+    }
+
+    /** BNI Connect 匯出的 .xls 有時其實是 HTML 表格，CSV 可能是 UTF-8 或 Big5 */
+    function workbookRows(buf, fileName) {
+      var XLSX = window.XLSX;
+      var head = String.fromCharCode.apply(null, new Uint8Array(buf.slice(0, 256))).replace(/^[\s﻿ï»¿]+/, '');
+      var isText = /\.(csv|txt|html?)$/i.test(fileName) || head.charAt(0) === '<';
+      var wb = isText ? XLSX.read(decodeText(buf), { type: 'string' }) : XLSX.read(new Uint8Array(buf), { type: 'array' });
+      var best = [];
+      wb.SheetNames.forEach(function (name) {
+        var rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: '', blankrows: false });
+        if (rows.length > best.length) best = rows;
+      });
+      if (!best.length) throw new Error('檔案裡沒有資料');
+      return best;
+    }
+
+    function onPalmsFile(e) {
+      var file = e.target.files[0];
+      if (!file) return;
+      $('#palms-status').textContent = '讀取「' + file.name + '」…';
+      $('#palms-preview').hidden = true;
+      Promise.all([App.loadScript(XLSX_URL), readFile(file)]).then(function (res) {
+        var rows = workbookRows(res[1], file.name);
+        return api('palms.preview', { rows: rows, fileName: file.name }).then(function (parsed) {
+          state.preview = { rows: rows, fileName: file.name, parsed: parsed };
+          renderPreview();
+        });
+      }).catch(function (err) {
+        $('#palms-status').textContent = '';
+        handleError(err);
+      }).then(function () {
+        e.target.value = '';
+      });
+    }
+
+    function palmsTable(members, summary) {
+      var head = '<tr><th>姓名</th>' + (summary ? '<th class="num">期數</th>' : '') + PALMS_COLS.map(function (c) {
+        return '<th class="num">' + c[1] + '</th>';
+      }).join('') + '</tr>';
+      var body = members.map(function (m) {
+        return '<tr' + (m.alert ? ' class="alert"' : '') + '><td>' + esc(m.name) + (m.alert ? ' <span class="tag">缺席提醒</span>' : '') + '</td>' +
+          (summary ? '<td class="num">' + m.periods + '</td>' : '') + PALMS_COLS.map(function (c) {
+            return '<td class="num">' + fmt(m[c[0]]) + '</td>';
+          }).join('') + '</tr>';
+      }).join('');
+      var foot = summary ? '<tr class="total"><td>合計</td><td></td>' + PALMS_COLS.map(function (c) {
+        return '<td class="num">' + fmt(summary.totals[c[0]]) + '</td>';
+      }).join('') + '</tr>' : '';
+      return '<div class="table-wrap"><table class="data"><thead>' + head + '</thead><tbody>' + body + foot + '</tbody></table></div>';
+    }
+
+    function renderPreview() {
+      var p = state.preview.parsed;
+      var period = p.period || { from: '', to: '' };
+      $('#palms-status').textContent = '「' + state.preview.fileName + '」';
+      var box = $('#palms-preview');
+      box.innerHTML =
+        '<div class="form-grid">' + field('期間起', '<input type="date" id="pv-from" value="' + esc(period.from) + '">', true) +
+        field('期間迄', '<input type="date" id="pv-to" value="' + esc(period.to) + '">', true) + '</div>' +
+        (p.period ? '' : '<p class="notice">報表裡找不到期間，請手動填寫起訖日期。</p>') +
+        '<div class="kv"><span>會員 <b>' + p.members.length + '</b> 位</span><span>辨識到的欄位：' + esc(p.columns.join('、')) + '</span>' +
+        (p.missing.length ? '<span>沒有的欄位（記為 0）：' + esc(p.missing.join('、')) + '</span>' : '') +
+        (p.unknown.length ? '<span>未使用的欄位：' + esc(p.unknown.join('、')) + '</span>' : '') +
+        (p.skipped.length ? '<span>略過：' + esc(p.skipped.join('、')) + '</span>' : '') + '</div>' +
+        (p.newNames.length ? '<div class="notice">以下 ' + p.newNames.length + ' 位不在會員名單：' + esc(p.newNames.join('、')) +
+          '<br><label class="check"><input type="checkbox" id="pv-sync" checked> 儲存時自動加入會員名單</label></div>' : '') +
+        palmsTable(p.members, null) +
+        '<div class="toolbar"><button type="button" class="btn btn-primary" id="pv-save">儲存匯入</button>' +
+        '<button type="button" class="btn" id="pv-cancel">取消</button></div>';
+      box.hidden = false;
+      $('#pv-save').addEventListener('click', savePreview);
+      $('#pv-cancel').addEventListener('click', function () {
+        state.preview = null;
+        box.hidden = true;
+        $('#palms-status').textContent = '';
+      });
+    }
+
+    function savePreview() {
+      var pv = state.preview;
+      var from = $('#pv-from').value;
+      var to = $('#pv-to').value;
+      if (!from || !to) {
+        toast('請填寫期間起訖日期', 'error');
+        return;
+      }
+      $('#pv-save').disabled = true;
+      api('palms.save', {
+        rows: pv.rows, fileName: pv.fileName, from: from, to: to,
+        syncMembers: $('#pv-sync') ? $('#pv-sync').checked : true
+      }).then(function (res) {
+        toast('已匯入 ' + res.from + ' ～ ' + res.to + '，共 ' + res.count + ' 位' + (res.replaced ? '（已覆蓋舊資料）' : '') +
+          (res.addedMembers.length ? '，新增會員 ' + res.addedMembers.length + ' 位' : ''));
+        state.preview = null;
+        $('#palms-preview').hidden = true;
+        $('#palms-status').textContent = '';
+        if (res.addedMembers.length) {
+          state.board = null;
+          refreshBoot();
+        }
+        loadPeriods();
+        runSummary();
+      }).catch(function (err) {
+        $('#pv-save').disabled = false;
+        handleError(err);
+      });
+    }
+
+    function presetSummary(months) {
+      var to = App.todayIso();
+      $('#sum-from').value = App.addMonths(to, -months);
+      $('#sum-to').value = to;
+      runSummary();
+    }
+
+    function runSummary() {
+      var from = $('#sum-from').value;
+      var to = $('#sum-to').value;
+      if (!from || !to) return;
+      var box = $('#palms-summary');
+      box.innerHTML = '<p class="muted">計算中…</p>';
+      api('palms.summary', { from: from, to: to }).then(function (s) {
+        if (!s.members.length) {
+          box.innerHTML = '<p class="empty">這段期間沒有 PALMS 資料</p>';
+          return;
+        }
+        box.innerHTML = '<p class="muted small">共 ' + s.periods.length + ' 期・' + s.members.length + ' 位' +
+          (s.absenceAlert ? '・缺席達 ' + s.absenceAlert + ' 次標示提醒' : '') + '</p>' +
+          (s.overlaps.length ? '<p class="notice warn">有期間互相重疊（例如同時匯入週報與月報），加總會重複計算：' + esc(s.overlaps.map(function (o) {
+            return o[0].from + '～' + o[0].to + ' 與 ' + o[1].from + '～' + o[1].to;
+          }).join('；')) + '</p>' : '') +
+          palmsTable(s.members, s) +
+          '<div class="toolbar"><button type="button" class="btn" id="sum-line">產生 LINE 報告</button></div>';
+        $('#sum-line').addEventListener('click', function () { showLineText(from, to); });
+      }).catch(handleError);
+    }
+
+    // ---------- 設定 ----------
+
+    function weekdayValue(v) {
+      var s = String(v || '');
+      var days = ['一', '二', '三', '四', '五', '六', '日'];
+      for (var i = 0; i < days.length; i++) if (s.indexOf(days[i]) >= 0) return days[i];
+      var n = parseInt(s, 10);
+      return n >= 0 && n <= 7 ? App.WEEKDAYS[n % 7] : '四';
+    }
+
+    function timeValue(v) {
+      var m = /(\d{1,2})\s*[:：]\s*(\d{2})/.exec(String(v || ''));
+      return m ? (m[1].length === 1 ? '0' : '') + m[1] + ':' + m[2] : '';
+    }
+
+    function renderSettings() {
+      var form = $('#settings-form');
+      form.innerHTML = state.boot.settingsForm.map(function (it) {
+        var control;
+        if (it.key === 'meetingWeekday') {
+          var cur = weekdayValue(it.value);
+          control = '<select name="meetingWeekday">' + ['一', '二', '三', '四', '五', '六', '日'].map(function (d) {
+            return '<option' + (d === cur ? ' selected' : '') + '>' + d + '</option>';
+          }).join('') + '</select>';
+        } else if (it.key === 'meetingTime' || it.key === 'lateAfter') {
+          control = '<input type="time" name="' + it.key + '" value="' + esc(timeValue(it.value)) + '">';
+        } else if (it.key === 'badgeWidth' || it.key === 'badgeHeight' || it.key === 'absenceAlert') {
+          control = '<input type="number" min="0" step="1" name="' + it.key + '" value="' + esc(it.value) + '">';
+        } else {
+          control = '<input type="text" maxlength="40" name="' + it.key + '" value="' + esc(it.value) + '">';
+        }
+        return '<label class="field"><span>' + esc(it.title) + '</span>' + control +
+          (it.note ? '<span class="hint">' + esc(it.note) + '</span>' : '') + '</label>';
+      }).join('') + '<div><button type="submit" class="btn btn-primary">儲存設定</button></div>';
+      var links = [];
+      if (state.boot.spreadsheetUrl) links.push('<a class="btn" target="_blank" rel="noopener" href="' + esc(state.boot.spreadsheetUrl) + '">開啟資料試算表</a>');
+      if (state.boot.registerUrl) links.push('<a class="btn" target="_blank" rel="noopener" href="' + esc(state.boot.registerUrl) + '">開啟來賓報名頁</a>');
+      $('#settings-links').innerHTML = links.join('');
+    }
+
+    function saveSettings(e) {
+      e.preventDefault();
+      var btn = $('#settings-form button[type=submit]');
+      btn.disabled = true;
+      api('settings.save', formValues($('#settings-form'))).then(function () {
+        return api('admin.bootstrap');
+      }).then(function (boot) {
+        applyBoot(boot);
+        renderSettings();
+        toast('設定已儲存');
+      }).catch(function (err) {
+        btn.disabled = false;
+        handleError(err);
+      });
+    }
+
+    // ---------- 啟動 ----------
+
+    function init() {
+      $('#login-form').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var pin = $('#pin-input').value.trim();
+        if (!pin) return;
+        App.setPin(pin);
+        var btn = $('#login-form button[type=submit]');
+        btn.disabled = true;
+        start().then(function () { btn.disabled = false; });
+      });
+      $('#logout-btn').addEventListener('click', function () {
+        App.setPin('');
+        showLogin();
+      });
+      $('#tabs').addEventListener('click', function (e) {
+        var b = e.target.closest('button[data-tab]');
+        if (b) switchTab(b.getAttribute('data-tab'));
+      });
+      $('#meeting-date').addEventListener('change', onDateChange);
+
+      $('#member-search').addEventListener('input', renderBoard);
+      $('#member-grid').addEventListener('click', onMemberClick);
+      $('#checkin-guests').addEventListener('click', onCheckinGuestClick);
+      $('#mark-absent-btn').addEventListener('click', markAbsent);
+      $('#attendance-text-btn').addEventListener('click', function () {
+        if (state.board) App.modal.showText('出席結果', attendanceText());
+      });
+      $('#refresh-btn').addEventListener('click', loadBoard);
+      $('#walkin-btn').addEventListener('click', function () { openNewGuest(true); });
+
+      $('#guest-add-btn').addEventListener('click', function () { openNewGuest(false); });
+      $('#guest-table').addEventListener('click', onGuestTableClick);
+
+      $('#print-view').addEventListener('click', onPrintClick);
+
+      $('#palms-file').addEventListener('change', onPalmsFile);
+      $('#palms-periods').addEventListener('click', onPeriodsClick);
+      $('#sum-3m').addEventListener('click', function () { presetSummary(3); });
+      $('#sum-6m').addEventListener('click', function () { presetSummary(6); });
+      $('#sum-run').addEventListener('click', runSummary);
+
+      $('#settings-form').addEventListener('submit', saveSettings);
+
+      if (App.getPin()) start();
+      else showLogin();
+    }
+
+    init();
+  })();
+</script>

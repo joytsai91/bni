@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+  <?!= include('Styles') ?>
+</head>
+<body>
+  <div class="register-wrap">
+    <header class="register-head">
+      <span class="brand-mark">BNI</span>
+      <h1 id="reg-title">來賓報名</h1>
+      <p class="muted">歡迎蒞臨例會！留下資料，我們會為您準備名牌與座位。</p>
+    </header>
+
+    <p class="muted" id="reg-loading" style="text-align:center">載入中…</p>
+
+    <form class="card register-form" id="reg-form" novalidate hidden>
+      <label class="field"><span>參加日期 <b class="req">*</b></span><select name="date" id="reg-date"></select></label>
+      <label class="field"><span>姓名 <b class="req">*</b></span><input type="text" name="name" maxlength="40" autocomplete="name"></label>
+      <label class="field"><span>公司名稱</span><input type="text" name="company" maxlength="80" autocomplete="organization"></label>
+      <label class="field"><span>行業／專業別 <b class="req">*</b></span><input type="text" name="category" maxlength="60" placeholder="例如：室內設計、保險規劃"></label>
+      <label class="field"><span>手機</span><input type="tel" name="phone" maxlength="30" autocomplete="tel"></label>
+      <label class="field"><span>Email</span><input type="email" name="email" maxlength="100" autocomplete="email"></label>
+      <label class="field"><span>邀請人</span><select name="inviter" id="reg-inviter"></select></label>
+      <label class="field"><span>備註</span><textarea name="note" rows="2" maxlength="200"></textarea></label>
+      <input type="text" name="website" class="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+      <p class="form-error" id="reg-error" hidden></p>
+      <button type="submit" class="btn btn-primary btn-block" id="reg-submit">送出報名</button>
+    </form>
+
+    <div class="card done" id="reg-done" hidden>
+      <div class="big">🎉</div>
+      <h2 id="done-title">報名完成</h2>
+      <p class="muted" id="done-text" style="margin:0"></p>
+      <button type="button" class="btn" id="reg-again">再幫一位朋友報名</button>
+    </div>
+  </div>
+
+  <?!= include('Common') ?>
+  <script>
+    (function () {
+      'use strict';
+      var App = window.App;
+      var $ = App.$;
+      var esc = App.esc;
+      var form = $('#reg-form');
+      var meetings = [];
+
+      function pageLocation() {
+        return new Promise(function (resolve) {
+          try { google.script.url.getLocation(resolve); } catch (e) { resolve(null); }
+        });
+      }
+
+      function selectValue(select, value) {
+        if (!value) return;
+        var has = Array.prototype.some.call(select.options, function (o) { return o.value === value; });
+        if (!has) {
+          var opt = document.createElement('option');
+          opt.value = value;
+          opt.textContent = value;
+          select.appendChild(opt);
+        }
+        select.value = value;
+      }
+
+      function showError(msg) {
+        $('#reg-error').textContent = msg;
+        $('#reg-error').hidden = !msg;
+      }
+
+      Promise.all([App.api('public.bootstrap'), pageLocation()]).then(function (res) {
+        var b = res[0];
+        var params = (res[1] && res[1].parameter) || {};
+        meetings = b.meetings;
+        $('#reg-title').textContent = b.chapterName + '｜來賓報名';
+        $('#reg-date').innerHTML = b.meetings.map(function (m) {
+          return '<option value="' + esc(m.date) + '">' + esc(m.label + (b.meetingTime ? ' ' + b.meetingTime : '')) + '</option>';
+        }).join('');
+        if (params.date && b.meetings.some(function (m) { return m.date === params.date; })) $('#reg-date').value = params.date;
+        $('#reg-inviter').innerHTML = '<option value="">（不確定／無）</option>' + b.members.map(function (m) {
+          return '<option value="' + esc(m.name) + '">' + esc(m.name + (m.category ? '（' + m.category + '）' : '')) + '</option>';
+        }).join('');
+        selectValue($('#reg-inviter'), String(params.inviter || '').trim().slice(0, 40));
+        $('#reg-loading').hidden = true;
+        form.hidden = false;
+      }).catch(function (err) {
+        $('#reg-loading').textContent = '暫時無法報名：' + err.message;
+      });
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var data = {};
+        Array.prototype.forEach.call(form.querySelectorAll('[name]'), function (el) { data[el.name] = el.value.trim(); });
+        if (!data.name) { showError('請填寫姓名'); return; }
+        if (!data.category) { showError('請填寫行業／專業別'); return; }
+        showError('');
+        $('#reg-submit').disabled = true;
+        App.api('guest.register', data).then(function (res) {
+          var m = meetings.filter(function (x) { return x.date === res.guest.date; })[0];
+          $('#done-title').textContent = res.duplicate ? '您已經報名過囉' : '報名完成，期待見到您！';
+          $('#done-text').textContent = res.guest.name + '，' + (m ? m.label : res.guest.date) + ' 見。';
+          form.hidden = true;
+          $('#reg-done').hidden = false;
+        }).catch(function (err) {
+          showError(err.message);
+        }).then(function () {
+          $('#reg-submit').disabled = false;
+        });
+      });
+
+      $('#reg-again').addEventListener('click', function () {
+        ['name', 'company', 'category', 'phone', 'email', 'note'].forEach(function (n) { form.querySelector('[name="' + n + '"]').value = ''; });
+        $('#reg-done').hidden = true;
+        form.hidden = false;
+        form.querySelector('[name="name"]').focus();
+      });
+    })();
+  </script>
+</body>
+</html>

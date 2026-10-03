@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <?!= include('Styles') ?>
+  <?!= include('PrintStyles') ?>
+</head>
+<body>
+  <div id="app">
+    <div class="sticky-head">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark">BNI</span><span id="chapter-name">分會管理</span></div>
+        <div class="topbar-right" id="date-box" hidden>
+          <label class="date-field">例會日期 <input type="date" id="meeting-date"></label>
+          <button type="button" class="btn-link" id="logout-btn">登出</button>
+        </div>
+      </header>
+      <nav class="tabs" id="tabs" hidden>
+        <button type="button" data-tab="checkin" class="active">簽到</button>
+        <button type="button" data-tab="guests">來賓</button>
+        <button type="button" data-tab="print">列印</button>
+        <button type="button" data-tab="palms">PALMS</button>
+        <button type="button" data-tab="settings">設定</button>
+      </nav>
+    </div>
+
+    <section class="login" id="login-view" hidden>
+      <form class="card login-card" id="login-form">
+        <h1>管理登入</h1>
+        <p class="muted" style="margin:0">請輸入分會管理密碼</p>
+        <input type="password" id="pin-input" autocomplete="current-password" placeholder="管理密碼">
+        <button type="submit" class="btn btn-primary btn-block">登入</button>
+        <p class="form-error" id="login-error" hidden></p>
+      </form>
+    </section>
+
+    <main id="main-view" hidden>
+      <section class="view" data-view="checkin">
+        <div class="stats" id="checkin-stats"></div>
+        <div class="toolbar">
+          <input type="search" id="member-search" placeholder="搜尋會員姓名、公司、專業別">
+          <button type="button" class="btn" id="refresh-btn">重新整理</button>
+          <button type="button" class="btn" id="attendance-text-btn">出席結果文字</button>
+          <button type="button" class="btn" id="mark-absent-btn">未簽到者記缺席</button>
+        </div>
+        <h2>會員 <span class="muted small">當天點一下即簽到，超過遲到時間自動記遲到；再點一下可改代理、病假等</span></h2>
+        <div class="member-grid" id="member-grid"></div>
+        <div class="section-head">
+          <h2>來賓</h2>
+          <button type="button" class="btn btn-primary" id="walkin-btn">＋ 現場來賓</button>
+        </div>
+        <div class="guest-list" id="checkin-guests"></div>
+      </section>
+
+      <section class="view" data-view="guests" hidden>
+        <div class="card">
+          <h2>來賓報名連結</h2>
+          <p class="muted">分享到 LINE 或社群，來賓填完會直接出現在名單、名牌與桌牌。</p>
+          <div id="register-link"></div>
+        </div>
+        <div class="section-head">
+          <h2>來賓名單 <span class="muted" id="guest-count"></span></h2>
+          <button type="button" class="btn btn-primary" id="guest-add-btn">＋ 代為登記</button>
+        </div>
+        <div id="guest-table"></div>
+      </section>
+
+      <section class="view" data-view="print" id="print-view" hidden>
+        <p class="muted" id="print-date-note" style="margin:0"></p>
+        <div class="print-grid">
+          <div class="card print-card">
+            <h3>會員簽到表</h3>
+            <p>A4 直式，在籍會員依名單順序排列，含代理人簽名欄。</p>
+            <button type="button" class="btn btn-primary" data-print="memberSheet">預覽列印</button>
+          </div>
+          <div class="card print-card">
+            <h3>來賓簽到表</h3>
+            <p>已報名來賓預先印好，下方留空白列給現場來賓。</p>
+            <label>空白列 <input type="number" id="guest-blank-rows" value="8" min="0" max="60"></label>
+            <button type="button" class="btn btn-primary" data-print="guestSheet">預覽列印</button>
+          </div>
+          <div class="card print-card">
+            <h3>來賓名牌</h3>
+            <p id="badge-size-note"></p>
+            <label>加印空白名牌 <input type="number" id="badge-blank" value="0" min="0" max="100"></label>
+            <button type="button" class="btn btn-primary" data-print="guestBadges">預覽列印</button>
+          </div>
+          <div class="card print-card">
+            <h3>來賓桌牌</h3>
+            <p>A4 對折立牌，兩面都看得到姓名、公司與邀請人。</p>
+            <button type="button" class="btn btn-primary" data-print="guestTents">預覽列印</button>
+          </div>
+          <div class="card print-card">
+            <h3>會員桌牌</h3>
+            <p>A4 對折立牌，全體在籍會員一人一張。</p>
+            <button type="button" class="btn btn-primary" data-print="memberTents">預覽列印</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="view" data-view="palms" hidden>
+        <div class="card">
+          <h2>匯入 PALMS 報表</h2>
+          <p class="muted">從 BNI Connect 匯出 PALMS 報表（Excel 或 CSV）後上傳；同一期間重新匯入會覆蓋舊資料。</p>
+          <div class="file-pick">
+            <input type="file" id="palms-file" accept=".xls,.xlsx,.csv,.htm,.html">
+            <span class="muted small" id="palms-status"></span>
+          </div>
+          <div id="palms-preview" hidden></div>
+        </div>
+        <div class="card">
+          <h2>已匯入期間</h2>
+          <div id="palms-periods" style="margin-top:12px"></div>
+        </div>
+        <div class="card">
+          <h2>會員統計</h2>
+          <div class="toolbar" style="margin:12px 0">
+            <input type="date" id="sum-from"> ～ <input type="date" id="sum-to">
+            <button type="button" class="btn btn-primary" id="sum-run">查詢</button>
+            <button type="button" class="btn" id="sum-3m">近 3 個月</button>
+            <button type="button" class="btn" id="sum-6m">近 6 個月</button>
+          </div>
+          <div id="palms-summary"></div>
+        </div>
+      </section>
+
+      <section class="view" data-view="settings" hidden>
+        <form class="card form-grid" id="settings-form"></form>
+        <div class="card">
+          <h2>資料</h2>
+          <p class="muted">會員名單、來賓、出席與 PALMS 都存在 Google 試算表，可以直接在試算表編輯（例如新增會員、標示離會）。</p>
+          <div class="toolbar" id="settings-links"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal" id="modal" hidden></div>
+  <div id="print-root" hidden></div>
+  <div class="toast" id="toast" hidden></div>
+
+  <?!= include('Common') ?>
+  <?!= include('PrintJs') ?>
+  <?!= include('AppJs') ?>
+</body>
+</html>

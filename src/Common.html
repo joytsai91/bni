@@ -1,0 +1,225 @@
+<script>
+  /* 共用工具：API 呼叫、跳脫、提示、對話框（管理系統與來賓報名頁共用） */
+  (function () {
+    'use strict';
+    var App = window.App = window.App || {};
+
+    // 管理密碼：記在記憶體，並放 sessionStorage 讓重新整理後不用再登入（關掉分頁就失效）
+    var PIN_KEY = 'bni_admin_pin';
+    var pinMemory = '';
+    function storage(action, value) {
+      try {
+        if (action === 'get') return window.sessionStorage.getItem(PIN_KEY) || '';
+        if (value) window.sessionStorage.setItem(PIN_KEY, value);
+        else window.sessionStorage.removeItem(PIN_KEY);
+      } catch (e) { /* 無痕模式等環境可能無法使用 */ }
+      return '';
+    }
+    App.getPin = function () { return pinMemory || storage('get'); };
+    App.setPin = function (pin) { pinMemory = pin || ''; storage('set', pin); };
+
+    App.api = function (action, data) {
+      return new Promise(function (resolve, reject) {
+        google.script.run
+          .withSuccessHandler(function (res) {
+            if (res && res.ok) resolve(res.data);
+            else reject(new Error((res && res.error) || '伺服器沒有回應，請稍後再試'));
+          })
+          .withFailureHandler(function (err) {
+            reject(new Error(err && err.message ? err.message : '連線失敗，請檢查網路後再試'));
+          })
+          .apiCall({ action: action, data: data || {}, pin: App.getPin() });
+      });
+    };
+
+    App.$ = function (sel, root) { return (root || document).querySelector(sel); };
+    App.$$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
+    App.esc = function (s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    };
+
+    var toastTimer = null;
+    App.toast = function (msg, type) {
+      var el = document.getElementById('toast');
+      if (!el) return;
+      el.textContent = msg;
+      el.className = 'toast' + (type === 'error' ? ' error' : '');
+      el.hidden = false;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(function () { el.hidden = true; }, type === 'error' ? 6000 : 2500);
+    };
+
+    // ---------- 日期 ----------
+    App.WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六'];
+    function pad(n) { return (n < 10 ? '0' : '') + n; }
+    function isoFromUtc(d) { return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()); }
+    App.dateLabel = function (iso) {
+      if (!iso) return '';
+      return iso + '（' + App.WEEKDAYS[new Date(iso + 'T00:00:00Z').getUTCDay()] + '）';
+    };
+    App.todayIso = function () {
+      var d = new Date();
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    };
+    App.addMonths = function (iso, months) {
+      var d = new Date(iso + 'T00:00:00Z');
+      d.setUTCMonth(d.getUTCMonth() + months);
+      return isoFromUtc(d);
+    };
+    App.nowStamp = function () {
+      var d = new Date();
+      return App.todayIso() + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    };
+
+    // ---------- 外部元件與剪貼簿 ----------
+    var scripts = {};
+    App.loadScript = function (src) {
+      if (!scripts[src]) {
+        scripts[src] = new Promise(function (resolve, reject) {
+          var s = document.createElement('script');
+          s.src = src;
+          s.onload = resolve;
+          s.onerror = function () {
+            delete scripts[src];
+            reject(new Error('元件載入失敗，請檢查網路後再試'));
+          };
+          document.head.appendChild(s);
+        });
+      }
+      return scripts[src];
+    };
+
+    function legacyCopy(text) {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      return ok;
+    }
+    App.copyText = function (text) {
+      if (navigator.clipboard && window.isSecureContext) {
+        return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return legacyCopy(text); });
+      }
+      return Promise.resolve(legacyCopy(text));
+    };
+
+    // ---------- 對話框 ----------
+    var modalResolve = null;
+    function modalEl() { return document.getElementById('modal'); }
+    function closeModal(value) {
+      var m = modalEl();
+      if (m) { m.hidden = true; m.innerHTML = ''; }
+      var resolve = modalResolve;
+      modalResolve = null;
+      if (resolve) resolve(value);
+    }
+
+    /**
+     * opts: { title, body (HTML 字串或元素), actions: [{ label, value, cls, primary, validate(), onClick(), keepOpen }] }
+     * 回傳 Promise，值為按下的按鈕 value（關閉或取消為 null）。
+     * body 內有 data-modal-value 的元素，點了也會以該值關閉。
+     */
+    App.modal = {
+      open: function (opts) {
+        var m = modalEl();
+        if (modalResolve) closeModal(null);
+        var card = document.createElement('div');
+        card.className = 'modal-card';
+        card.setAttribute('role', 'dialog');
+        card.setAttribute('aria-modal', 'true');
+        var h = document.createElement('h2');
+        h.textContent = opts.title || '';
+        card.appendChild(h);
+        if (opts.body) {
+          if (typeof opts.body === 'string') {
+            var wrap = document.createElement('div');
+            wrap.innerHTML = opts.body;
+            card.appendChild(wrap);
+          } else {
+            card.appendChild(opts.body);
+          }
+        }
+        var actions = opts.actions || [{ label: '關閉', value: null }];
+        var bar = document.createElement('div');
+        bar.className = 'modal-actions';
+        actions.forEach(function (a) {
+          var b = document.createElement('button');
+          b.type = 'button';
+          b.className = 'btn ' + (a.cls || '');
+          b.textContent = a.label;
+          b.addEventListener('click', function () {
+            if (a.validate && !a.validate()) return;
+            if (a.onClick) a.onClick();
+            if (!a.keepOpen) closeModal(a.value === undefined ? null : a.value);
+          });
+          bar.appendChild(b);
+          if (a.primary) card.dataset.primaryIndex = String(actions.indexOf(a));
+        });
+        card.appendChild(bar);
+        card.addEventListener('click', function (e) {
+          var t = e.target.closest('[data-modal-value]');
+          if (t && card.contains(t)) closeModal(t.getAttribute('data-modal-value'));
+        });
+        // 表單按 Enter：執行主要按鈕，不要讓頁面重新載入
+        card.addEventListener('submit', function (e) {
+          e.preventDefault();
+          var i = card.dataset.primaryIndex;
+          if (i !== undefined) bar.children[Number(i)].click();
+        });
+        m.innerHTML = '';
+        m.appendChild(card);
+        m.hidden = false;
+        var first = card.querySelector('input:not([type=hidden]):not([readonly]), select, textarea:not([readonly])');
+        if (first) first.focus();
+        return new Promise(function (resolve) { modalResolve = resolve; });
+      },
+      close: closeModal,
+      confirm: function (title, message, okLabel) {
+        var p = document.createElement('p');
+        p.textContent = message || '';
+        return App.modal.open({
+          title: title,
+          body: p,
+          actions: [{ label: '取消', value: null }, { label: okLabel || '確定', value: 'ok', cls: 'btn-primary', primary: true }]
+        }).then(function (v) { return v === 'ok'; });
+      },
+      /** 顯示可複製的文字（LINE 週報、出席結果） */
+      showText: function (title, text) {
+        var ta = document.createElement('textarea');
+        ta.className = 'copy';
+        ta.readOnly = true;
+        ta.value = text;
+        return App.modal.open({
+          title: title,
+          body: ta,
+          actions: [
+            { label: '關閉', value: null },
+            {
+              label: '複製', cls: 'btn-primary', keepOpen: true, onClick: function () {
+                App.copyText(text).then(function (ok) {
+                  if (ok) App.toast('已複製，可以貼到 LINE 了');
+                  else { ta.select(); App.toast('請長按文字手動複製', 'error'); }
+                });
+              }
+            }
+          ]
+        });
+      }
+    };
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && modalResolve) closeModal(null);
+    });
+    document.addEventListener('click', function (e) {
+      if (e.target === modalEl()) closeModal(null);
+    });
+  })();
+</script>

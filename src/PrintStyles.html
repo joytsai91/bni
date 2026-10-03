@@ -1,0 +1,89 @@
+<style>
+  /* ---------- 預覽 ---------- */
+  #print-root { position: fixed; inset: 0; z-index: 400; background: #cfd3d9; overflow: auto; }
+  .print-toolbar {
+    position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 10px 16px; background: #111827; color: #fff; font-size: 14px;
+  }
+  .print-toolbar .grow { flex: 1; color: #d1d5db; min-width: 200px; }
+  .print-pages { padding: 16px 0 48px; }
+  .print-pages .page, .print-pages .doc { margin: 0 auto 16px; box-shadow: 0 2px 14px rgba(0, 0, 0, .18); }
+  .print-pages, .print-pages * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+  .page { width: 210mm; height: 296mm; overflow: hidden; position: relative; background: #fff; color: #111; }
+  .page + .page { break-before: page; page-break-before: always; }
+  .doc { width: 210mm; min-height: 296mm; padding: 12mm; background: #fff; color: #111; }
+  .fit { display: block; width: 100%; white-space: nowrap; overflow: hidden; }
+
+  /* ---------- 簽到表 ---------- */
+  .doc-head {
+    display: flex; align-items: flex-end; justify-content: space-between; gap: 6mm;
+    border-bottom: 0.6mm solid #cf2030; padding-bottom: 2.5mm; margin-bottom: 4mm;
+  }
+  .doc-title { font-size: 17pt; font-weight: 900; }
+  .doc-title .chapter { color: #cf2030; margin-right: 3mm; }
+  .doc-meta { font-size: 10pt; color: #333; text-align: right; line-height: 1.5; white-space: nowrap; }
+  .sign-table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 10.5pt; }
+  .sign-table th, .sign-table td {
+    border: 0.25mm solid #444; padding: 0 1.8mm; height: 10.5mm;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
+  .sign-table th { background: #f2f2f2; height: 8mm; font-size: 10pt; text-align: center; }
+  .sign-table td.c { text-align: center; color: #555; }
+  .sign-table td.sm { font-size: 9pt; }
+  .sign-table td.name { font-weight: 700; }
+  .sign-table tr { break-inside: avoid; page-break-inside: avoid; }
+  .sign-table thead { display: table-header-group; }
+  .doc-foot { margin-top: 4mm; font-size: 9pt; color: #555; display: flex; justify-content: space-between; gap: 4mm; }
+
+  /* ---------- 名牌 ---------- */
+  .badge-page { display: grid; justify-content: center; align-content: center; }
+  .badge {
+    width: var(--bw); height: var(--bh); border: 0.2mm dashed #b5b5b5;
+    display: flex; flex-direction: column; overflow: hidden; background: #fff;
+  }
+  .badge-top {
+    flex: none; height: calc(var(--bh) * 0.2); background: #cf2030; color: #fff;
+    display: flex; align-items: center; justify-content: space-between; gap: 2mm;
+    padding: 0 calc(var(--bw) * 0.05); font-size: calc(var(--bh) * 0.08); font-weight: 700;
+  }
+  .badge-top .chapter { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .badge-tag { flex: none; background: #fff; color: #cf2030; border-radius: 99px; padding: 0.1em 0.7em; font-weight: 900; }
+  .badge-body {
+    flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; align-items: stretch;
+    text-align: center; padding: 0 calc(var(--bw) * 0.06);
+  }
+  .badge-name { font-size: calc(var(--bh) * 0.24); font-weight: 900; line-height: 1.2; }
+  .badge-company { font-size: calc(var(--bh) * 0.085); font-weight: 500; line-height: 1.35; margin-top: calc(var(--bh) * 0.02); }
+  .badge-category { font-size: calc(var(--bh) * 0.085); font-weight: 700; color: #cf2030; line-height: 1.35; }
+  .badge-foot {
+    flex: none; font-size: calc(var(--bh) * 0.065); color: #555; text-align: center;
+    padding: 0 3mm calc(var(--bh) * 0.045); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .badge.blank .badge-body { justify-content: space-evenly; text-align: left; }
+  .write-line { font-size: calc(var(--bh) * 0.075); color: #777; border-bottom: 0.25mm solid #999; padding-bottom: 0.5mm; }
+
+  /* ---------- 桌牌（A4 對折，上半部倒過來印） ---------- */
+  .tent-half {
+    height: 148mm; display: flex; flex-direction: column; justify-content: center; align-items: stretch;
+    text-align: center; padding: 12mm 16mm;
+  }
+  .tent-half.flip { transform: rotate(180deg); }
+  .tent-half.front { border-top: 0.3mm dashed #b5b5b5; }
+  .tent-chapter { font-size: 7mm; font-weight: 700; color: #cf2030; letter-spacing: 0.5mm; }
+  .tent-name { font-size: 32mm; font-weight: 900; line-height: 1.25; margin: 3mm 0 2mm; }
+  .tent-company { font-size: 10mm; font-weight: 500; line-height: 1.4; }
+  .tent-category { font-size: 10mm; font-weight: 700; color: #cf2030; line-height: 1.4; }
+  .tent-foot { margin-top: 5mm; font-size: 6mm; color: #444; }
+  .tent-foot .badge-tag { background: #cf2030; color: #fff; margin-right: 2mm; }
+
+  @media print {
+    html, body { background: #fff !important; }
+    body.printing #app, body.printing #toast, body.printing #modal { display: none !important; }
+    body.printing #print-root { position: static; overflow: visible; background: none; }
+    .print-toolbar { display: none !important; }
+    .print-pages { padding: 0; zoom: 1 !important; }
+    .print-pages .page, .print-pages .doc { margin: 0; box-shadow: none; }
+    .print-pages .doc { width: auto; min-height: 0; padding: 0; }
+  }
+</style>

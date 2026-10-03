@@ -1,0 +1,213 @@
+<script>
+  /* 列印：會員簽到表、來賓簽到表、來賓名牌、桌牌（A4，預覽後直接列印） */
+  (function () {
+    'use strict';
+    var App = window.App;
+    var esc = App.esc;
+
+    function chunk(list, size) {
+      var out = [];
+      for (var i = 0; i < list.length; i += size) out.push(list.slice(i, i + size));
+      return out;
+    }
+
+    function clampInt(v, max) {
+      var n = Math.floor(Number(v) || 0);
+      return Math.max(0, Math.min(max, n));
+    }
+
+    function docHead(data, title, extra) {
+      var s = data.settings;
+      return '<div class="doc-head"><div class="doc-title"><span class="chapter">' + esc(s.chapterName) + '</span>' + esc(title) + '</div>' +
+        '<div class="doc-meta">例會日期：' + esc(data.dateLabel) + (s.meetingTime ? '　' + esc(s.meetingTime) : '') +
+        (extra ? '<br>' + extra : '') + '</div></div>';
+    }
+
+    function table(cols, rows) {
+      return '<table class="sign-table"><colgroup>' + cols.map(function (c) {
+        return c[1] ? '<col style="width:' + c[1] + 'mm">' : '<col>';
+      }).join('') + '</colgroup><thead><tr>' + cols.map(function (c) {
+        return '<th>' + esc(c[0]) + '</th>';
+      }).join('') + '</tr></thead><tbody>' + rows.join('') + '</tbody></table>';
+    }
+
+    function memberSheet(data) {
+      if (!data.members.length) return '';
+      var rows = data.members.map(function (m, i) {
+        return '<tr><td class="c">' + (i + 1) + '</td><td class="name">' + esc(m.name) + '</td><td class="sm">' + esc(m.company) +
+          '</td><td class="sm">' + esc(m.category) + '</td><td></td><td></td><td></td></tr>';
+      });
+      return '<div class="doc">' + docHead(data, '會員簽到表', '在籍會員 ' + data.members.length + ' 位') +
+        table([['#', 9], ['姓名', 26], ['公司', 40], ['專業別', 30], ['簽到', 30], ['代理人簽名', 30], ['備註']], rows) +
+        '<div class="doc-foot"><span>P 出席　L 遲到　S 代理　M 病假　A 缺席</span><span>列印時間：' + esc(App.nowStamp()) + '</span></div></div>';
+    }
+
+    function guestSheet(data, opts) {
+      var fee = data.settings.guestFee;
+      var blank = clampInt(opts.blankRows, 60);
+      if (!data.guests.length && !blank) return '';
+      var rows = data.guests.map(function (g, i) {
+        return '<tr><td class="c">' + (i + 1) + '</td><td class="name">' + esc(g.name) + '</td><td class="sm">' + esc(g.company) +
+          '</td><td class="sm">' + esc(g.category) + '</td><td class="sm">' + esc(g.phone) + '</td><td class="sm">' + esc(g.inviter) +
+          '</td><td></td><td></td></tr>';
+      });
+      for (var i = 0; i < blank; i++) {
+        rows.push('<tr><td class="c">' + (data.guests.length + i + 1) + '</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>');
+      }
+      return '<div class="doc">' + docHead(data, '來賓簽到表', '已報名 ' + data.guests.length + ' 位' + (fee ? '　來賓費用：' + esc(fee) : '')) +
+        table([['#', 9], ['姓名', 24], ['公司', 36], ['專業別', 26], ['手機', 28], ['邀請人', 20], ['簽名', 27], [fee ? '繳費' : '備註']], rows) +
+        '<div class="doc-foot"><span>歡迎蒞臨！請留下聯絡方式，會後我們會與您聯繫。</span><span>列印時間：' + esc(App.nowStamp()) + '</span></div></div>';
+    }
+
+    function badgeLayout(s) {
+      var cols = Math.max(1, Math.floor((210 - 8) / s.badgeWidth));
+      var rows = Math.max(1, Math.floor((296 - 8) / s.badgeHeight));
+      return { cols: cols, rows: rows, perPage: cols * rows };
+    }
+
+    function badge(g, s) {
+      var top = '<div class="badge-top"><span class="chapter">' + esc(s.chapterName) + '</span><span class="badge-tag">來賓</span></div>';
+      if (!g) {
+        return '<div class="badge blank">' + top + '<div class="badge-body"><div class="write-line">姓名</div>' +
+          '<div class="write-line">公司／專業別</div></div></div>';
+      }
+      return '<div class="badge">' + top + '<div class="badge-body"><div class="badge-name fit">' + esc(g.name) + '</div>' +
+        (g.company ? '<div class="badge-company fit">' + esc(g.company) + '</div>' : '') +
+        (g.category ? '<div class="badge-category fit">' + esc(g.category) + '</div>' : '') + '</div>' +
+        (g.inviter ? '<div class="badge-foot">邀請人：' + esc(g.inviter) + '</div>' : '') + '</div>';
+    }
+
+    function guestBadges(data, opts) {
+      var s = data.settings;
+      var items = data.guests.slice();
+      for (var i = clampInt(opts.blankBadges, 100); i > 0; i--) items.push(null);
+      if (!items.length) return '';
+      var l = badgeLayout(s);
+      var style = '--bw:' + s.badgeWidth + 'mm;--bh:' + s.badgeHeight + 'mm;' +
+        'grid-template-columns:repeat(' + l.cols + ',' + s.badgeWidth + 'mm);grid-template-rows:repeat(' + l.rows + ',' + s.badgeHeight + 'mm);';
+      return chunk(items, l.perPage).map(function (page) {
+        return '<div class="page badge-page" style="' + style + '">' + page.map(function (g) { return badge(g, s); }).join('') + '</div>';
+      }).join('');
+    }
+
+    function tentFace(p, s, isGuest, cls) {
+      return '<div class="tent-half ' + cls + '"><div class="tent-chapter">' + esc(s.chapterName) + '</div>' +
+        '<div class="tent-name fit">' + esc(p.name) + '</div>' +
+        (p.company ? '<div class="tent-company fit">' + esc(p.company) + '</div>' : '') +
+        (p.category ? '<div class="tent-category fit">' + esc(p.category) + '</div>' : '') +
+        (isGuest ? '<div class="tent-foot"><span class="badge-tag">來賓</span>' + (p.inviter ? '邀請人：' + esc(p.inviter) : '') + '</div>' : '') +
+        '</div>';
+    }
+
+    function tents(list, s, isGuest) {
+      return list.map(function (p) {
+        return '<div class="page">' + tentFace(p, s, isGuest, 'flip') + tentFace(p, s, isGuest, 'front') + '</div>';
+      }).join('');
+    }
+
+    var KINDS = {
+      memberSheet: { title: '會員簽到表', doc: true, hint: 'A4 直式', empty: '會員名單是空的', render: memberSheet },
+      guestSheet: { title: '來賓簽到表', doc: true, hint: 'A4 直式', empty: '沒有來賓，也沒有設定空白列', render: guestSheet },
+      guestBadges: {
+        title: '來賓名牌', hint: '印好後沿虛線裁切', empty: '這次例會還沒有來賓（可以加印空白名牌）', render: guestBadges
+      },
+      guestTents: {
+        title: '來賓桌牌', hint: '一頁一位，沿中間虛線對折', empty: '這次例會還沒有來賓',
+        render: function (d) { return tents(d.guests, d.settings, true); }
+      },
+      memberTents: {
+        title: '會員桌牌', hint: '一頁一位，沿中間虛線對折', empty: '會員名單是空的',
+        render: function (d) { return tents(d.members, d.settings, false); }
+      }
+    };
+
+    /** 字太長就縮小到放得下（名牌、桌牌的姓名與公司） */
+    function fitAll(root) {
+      App.$$('.fit', root).forEach(function (el) {
+        el.style.fontSize = '';
+        var size = parseFloat(window.getComputedStyle(el).fontSize);
+        var min = size * 0.3;
+        var guard = 40;
+        while (el.scrollWidth > el.clientWidth + 1 && size > min && guard-- > 0) {
+          size *= 0.92;
+          el.style.fontSize = size + 'px';
+        }
+      });
+    }
+
+    function fontsReady() {
+      var ready = document.fonts && document.fonts.ready ? document.fonts.ready : Promise.resolve();
+      return Promise.race([ready, new Promise(function (r) { setTimeout(r, 2500); })]);
+    }
+
+    /** 手機上把 A4 預覽縮小到螢幕寬度（列印時不受影響） */
+    function scalePreview(root, pages) {
+      var first = pages.firstElementChild;
+      if (!first) return;
+      var avail = root.clientWidth - 24;
+      var ratio = Math.min(1, avail / first.offsetWidth);
+      pages.style.zoom = ratio < 1 ? String(ratio) : '';
+    }
+
+    /** 把目前的預覽（已縮好字）做成獨立網頁，在新分頁開啟後用瀏覽器列印 */
+    function openInTab() {
+      var root = document.getElementById('print-root');
+      var pages = root.querySelector('.print-pages');
+      var styles = App.$$('style').map(function (s) { return s.textContent; }).join('\n');
+      var html = '<!DOCTYPE html><html lang="zh-Hant"><head><meta charset="utf-8"><title>列印</title><style>' + styles +
+        '</style></head><body class="printing"><div class="print-pages">' + pages.innerHTML + '</div></body></html>';
+      var url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      if (!window.open(url, '_blank')) App.toast('瀏覽器擋住了新分頁，請允許彈出視窗', 'error');
+    }
+
+    function close() {
+      var root = document.getElementById('print-root');
+      root.hidden = true;
+      root.innerHTML = '';
+      document.body.classList.remove('printing');
+    }
+
+    App.Print = {
+      kinds: KINDS,
+      badgeLayout: badgeLayout,
+      close: close,
+      open: function (kind, data, opts) {
+        var k = KINDS[kind];
+        var html = k.render(data, opts || {});
+        if (!html) {
+          App.toast(k.empty, 'error');
+          return false;
+        }
+        var root = document.getElementById('print-root');
+        root.innerHTML =
+          '<style>@media print { @page { size: A4 portrait; margin: ' + (k.doc ? '12mm' : '0') + '; } }</style>' +
+          '<div class="print-toolbar"><b>' + esc(k.title) + '</b><span class="grow">' + esc(data.dateLabel) + '・' + esc(k.hint) +
+          '・列印時選 A4、縮放 100%</span><button type="button" class="btn btn-primary" data-print-action="print">列印</button>' +
+          '<button type="button" class="btn" data-print-action="tab">在新分頁開啟</button>' +
+          '<button type="button" class="btn" data-print-action="close">關閉</button></div>' +
+          '<div class="print-pages">' + html + '</div>';
+        root.hidden = false;
+        document.body.classList.add('printing');
+        var pages = root.querySelector('.print-pages');
+        return fontsReady().then(function () {
+          fitAll(pages);
+          scalePreview(root, pages);
+          return true;
+        });
+      }
+    };
+
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest('[data-print-action]');
+      if (!btn) return;
+      var action = btn.getAttribute('data-print-action');
+      if (action === 'print') window.print();
+      else if (action === 'tab') openInTab();
+      else close();
+    });
+    document.addEventListener('keydown', function (e) {
+      var root = document.getElementById('print-root');
+      if (e.key === 'Escape' && root && !root.hidden) close();
+    });
+  })();
+</script>
